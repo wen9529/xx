@@ -2,11 +2,12 @@ import React, { useState } from 'react';
 import { CodeBlock } from './CodeBlock';
 import { TERMUX_SETUP_SCRIPT, PYTHON_BOT_SCRIPT, GITHUB_WORKFLOW_TEMPLATE, ENV_FILE_TEMPLATE, DEFAULT_STREAM_CONFIG } from '../constants';
 import { StreamConfig } from '../types';
-import { Terminal, Bot, Github, Save, Lock, FolderTree, FileKey, ShieldAlert, DownloadCloud, Activity } from 'lucide-react';
+import { Terminal, Bot, Github, Save, FolderTree, ShieldAlert, DownloadCloud, Activity, AlertTriangle, FileText } from 'lucide-react';
 
 export const TermuxGuide: React.FC = () => {
   const [config, setConfig] = useState<StreamConfig>(DEFAULT_STREAM_CONFIG);
   const [activeTab, setActiveTab] = useState<'setup' | 'bot' | 'workflow' | 'env'>('setup');
+  const [showDirectInstall, setShowDirectInstall] = useState(false);
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const { name, value } = e.target;
@@ -17,6 +18,13 @@ export const TermuxGuide: React.FC = () => {
   const botCode = PYTHON_BOT_SCRIPT;
   const workflowCode = GITHUB_WORKFLOW_TEMPLATE(config);
   const envCode = ENV_FILE_TEMPLATE(config);
+
+  // Helper to generate a 'cat' command for direct pasting
+  const directInstallCmd = `cat << 'EOF' > setup.sh
+${setupCode}
+EOF
+chmod +x setup.sh
+bash setup.sh`;
 
   return (
     <div className="max-w-6xl mx-auto p-6 h-full flex flex-col md:flex-row gap-6 animate-fade-in">
@@ -105,7 +113,7 @@ export const TermuxGuide: React.FC = () => {
             onClick={() => setActiveTab('bot')}
             className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${activeTab === 'bot' ? 'bg-gray-700 text-white shadow' : 'text-gray-400 hover:text-white'}`}
           >
-            bot.py (Full Logic)
+            bot.py (Source)
           </button>
           <button 
             onClick={() => setActiveTab('env')}
@@ -123,18 +131,39 @@ export const TermuxGuide: React.FC = () => {
 
         <div className="flex-1 overflow-auto">
           {activeTab === 'setup' && (
-            <div className="space-y-2">
-              <div className="bg-blue-900/20 border border-blue-900/50 p-4 rounded-lg text-sm text-blue-200">
-                <p className="font-bold mb-1">部署步骤:</p>
-                <ol className="list-decimal list-inside space-y-1 text-gray-300">
-                  <li>上传3个文件到 GitHub 私有仓库。</li>
-                  <li>Secrets 添加: <code>TELEGRAM_STREAM_KEY</code></li>
-                  <li>Termux 运行: <code>git clone ... && bash setup.sh</code></li>
-                  <li><strong>PM2 管理：</strong> 脚本自动安装 PM2 并托管 Alist/Bot，输入 <code>pm2 list</code> 查看状态。</li>
-                  <li><strong>关键步骤：</strong> 进入 Alist 网页后台 (http://localhost:5244)，设置 Aria2 密钥为 <code className="text-green-300">{config.aria2Secret}</code></li>
-                </ol>
+            <div className="space-y-4">
+              {/* Troubleshooting Box */}
+              <div className="bg-yellow-500/10 border border-yellow-500/30 p-4 rounded-lg flex gap-3 items-start">
+                <AlertTriangle className="text-yellow-400 flex-shrink-0 mt-1" size={20} />
+                <div className="text-sm text-gray-300">
+                  <h4 className="font-bold text-yellow-200 mb-1">遇到 "No such file or directory" 错误?</h4>
+                  <p className="mb-2">这说明 <code>git clone</code> 后，仓库是空的。请尝试以下修复方法：</p>
+                  <ul className="list-disc list-inside space-y-1 text-xs text-gray-400">
+                    <li><strong>方法 1 (推荐):</strong> 点击代码块右上角的 <DownloadCloud className="inline w-3 h-3"/> 按钮下载文件，然后手动上传到 GitHub。</li>
+                    <li><strong>方法 2 (直接生成):</strong> 在 Termux 中输入 <code>cat &gt; setup.sh</code>，粘贴下方代码，按 <code>Ctrl+D</code> 保存。</li>
+                    <li><strong>方法 3 (无Git模式):</strong> 点击下方 "切换到: 直接粘贴命令" 按钮，一键生成文件。</li>
+                  </ul>
+                </div>
               </div>
-              <CodeBlock code={setupCode} language="bash" title="setup.sh" />
+
+              <div className="flex justify-between items-center">
+                 <div className="text-sm font-bold text-blue-300">部署脚本内容:</div>
+                 <button 
+                   onClick={() => setShowDirectInstall(!showDirectInstall)}
+                   className="text-xs bg-gray-700 hover:bg-gray-600 px-3 py-1 rounded text-white transition-colors"
+                 >
+                   {showDirectInstall ? "切换回: 源码预览" : "切换到: 直接安装命令 (无Git)"}
+                 </button>
+              </div>
+
+              {showDirectInstall ? (
+                 <div className="animate-fade-in">
+                    <p className="text-xs text-gray-400 mb-2">复制以下所有内容直接粘贴到 Termux，将自动创建文件并运行：</p>
+                    <CodeBlock code={directInstallCmd} language="bash" title="Direct Install Command" />
+                 </div>
+              ) : (
+                <CodeBlock code={setupCode} language="bash" title="setup.sh" filename="setup.sh" />
+              )}
             </div>
           )}
 
@@ -145,19 +174,20 @@ export const TermuxGuide: React.FC = () => {
                    <div className="flex items-center gap-1 text-blue-400"><FolderTree size={16}/> <span>浏览: /ls</span></div>
                    <div className="flex items-center gap-1 text-purple-400"><Activity size={16}/> <span>托管: PM2</span></div>
                 </div>
-                <CodeBlock code={botCode} language="python" title="bot.py" />
+                <CodeBlock code={botCode} language="python" title="bot.py" filename="bot.py" />
              </div>
           )}
 
           {activeTab === 'env' && (
              <div className="space-y-2">
-                <CodeBlock code={envCode} language="bash" title=".env" />
+                <CodeBlock code={envCode} language="bash" title=".env" filename=".env" />
              </div>
           )}
 
           {activeTab === 'workflow' && (
             <div className="space-y-2">
-               <CodeBlock code={workflowCode} language="yaml" title=".github/workflows/stream.yml" />
+               <p className="text-xs text-gray-400">此文件需要放在 <code>.github/workflows/</code> 目录下。</p>
+               <CodeBlock code={workflowCode} language="yaml" title="stream.yml" filename="stream.yml" />
             </div>
           )}
         </div>
