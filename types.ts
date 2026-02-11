@@ -8,13 +8,16 @@ export interface StreamConfig {
   // GitHub Repo Details
   githubUser: string;
   githubRepo: string;
-  githubPat: string; // Personal Access Token (for Bot to trigger Action)
+  githubPat: string; // Personal Access Token
   
   // Telegram Configuration
   telegramBotToken: string;
-  telegramAdminId: string; // Your User ID (to prevent others from using your bot)
+  telegramAdminId: string;
   telegramRtmpUrl: string;
   telegramStreamKey: string;
+
+  // Alist Configuration
+  alistPassword: string; // New field for automation
 
   // File Defaults
   fileName: string;
