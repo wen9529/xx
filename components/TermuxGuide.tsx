@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { CodeBlock } from './CodeBlock';
 import { TERMUX_SETUP_SCRIPT, PYTHON_BOT_SCRIPT, GITHUB_WORKFLOW_TEMPLATE, ENV_FILE_TEMPLATE, DEFAULT_STREAM_CONFIG } from '../constants';
 import { StreamConfig } from '../types';
-import { Terminal, Bot, Github, Save, Lock, FolderTree, FileKey, ShieldAlert } from 'lucide-react';
+import { Terminal, Bot, Github, Save, Lock, FolderTree, FileKey, ShieldAlert, DownloadCloud, Activity } from 'lucide-react';
 
 export const TermuxGuide: React.FC = () => {
   const [config, setConfig] = useState<StreamConfig>(DEFAULT_STREAM_CONFIG);
@@ -52,13 +52,17 @@ export const TermuxGuide: React.FC = () => {
                 <label className="block text-xs text-gray-400 mb-1">GitHub PAT (Token)</label>
                 <input type="password" name="githubPat" value={config.githubPat} onChange={handleChange} className="input-field" />
               </div>
-              <div>
-                <label className="block text-xs text-gray-400 mb-1 flex items-center gap-1">
-                   Alist Admin Password <span className="bg-blue-600 px-1 rounded text-[10px]">Auto-Set</span>
-                </label>
-                <input type="text" name="alistPassword" value={config.alistPassword} onChange={handleChange} className="input-field text-yellow-400" />
-                <p className="text-[10px] text-gray-500 mt-1">脚本会自动将 Alist 密码修改为此值，以便 Bot 登录。</p>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">Alist Password</label>
+                  <input type="text" name="alistPassword" value={config.alistPassword} onChange={handleChange} className="input-field text-yellow-400" />
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">Aria2 Secret</label>
+                  <input type="text" name="aria2Secret" value={config.aria2Secret} onChange={handleChange} className="input-field text-green-400" />
+                </div>
               </div>
+              <p className="text-[10px] text-gray-500">部署后请在 Alist 后台->设置->Aria2 中填入此 RPC Secret。</p>
             </div>
           </div>
 
@@ -101,19 +105,19 @@ export const TermuxGuide: React.FC = () => {
             onClick={() => setActiveTab('bot')}
             className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${activeTab === 'bot' ? 'bg-gray-700 text-white shadow' : 'text-gray-400 hover:text-white'}`}
           >
-            bot.py (Logic)
+            bot.py (Full Logic)
           </button>
           <button 
             onClick={() => setActiveTab('env')}
             className={`px-4 py-2 rounded-md text-sm font-medium transition-colors flex items-center gap-2 ${activeTab === 'env' ? 'bg-gray-700 text-white shadow' : 'text-gray-400 hover:text-white'}`}
           >
-            .env (Secrets)
+            .env
           </button>
           <button 
             onClick={() => setActiveTab('workflow')}
             className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${activeTab === 'workflow' ? 'bg-gray-700 text-white shadow' : 'text-gray-400 hover:text-white'}`}
           >
-            stream.yml (Action)
+            stream.yml
           </button>
         </div>
 
@@ -123,10 +127,11 @@ export const TermuxGuide: React.FC = () => {
               <div className="bg-blue-900/20 border border-blue-900/50 p-4 rounded-lg text-sm text-blue-200">
                 <p className="font-bold mb-1">部署步骤:</p>
                 <ol className="list-decimal list-inside space-y-1 text-gray-300">
-                  <li>在 GitHub 创建<strong>私有仓库</strong> <code>{config.githubRepo}</code></li>
-                  <li>上传3个文件到 GitHub 仓库根目录 (yml文件放 <code>.github/workflows/</code>)</li>
-                  <li>GitHub Secrets 添加: <code>TELEGRAM_STREAM_KEY</code></li>
+                  <li>上传3个文件到 GitHub 私有仓库。</li>
+                  <li>Secrets 添加: <code>TELEGRAM_STREAM_KEY</code></li>
                   <li>Termux 运行: <code>git clone ... && bash setup.sh</code></li>
+                  <li><strong>PM2 管理：</strong> 脚本自动安装 PM2 并托管 Alist/Bot，输入 <code>pm2 list</code> 查看状态。</li>
+                  <li><strong>关键步骤：</strong> 进入 Alist 网页后台 (http://localhost:5244)，设置 Aria2 密钥为 <code className="text-green-300">{config.aria2Secret}</code></li>
                 </ol>
               </div>
               <CodeBlock code={setupCode} language="bash" title="setup.sh" />
@@ -135,9 +140,10 @@ export const TermuxGuide: React.FC = () => {
 
           {activeTab === 'bot' && (
              <div className="space-y-2">
-                <div className="flex items-center gap-2 text-sm text-green-400 mb-2">
-                  <FolderTree size={16} />
-                  <span>功能：Alist 文件浏览 (/ls) + 自动推流</span>
+                <div className="flex items-center gap-4 text-sm mb-2">
+                   <div className="flex items-center gap-1 text-green-400"><DownloadCloud size={16}/> <span>下载: /download</span></div>
+                   <div className="flex items-center gap-1 text-blue-400"><FolderTree size={16}/> <span>浏览: /ls</span></div>
+                   <div className="flex items-center gap-1 text-purple-400"><Activity size={16}/> <span>托管: PM2</span></div>
                 </div>
                 <CodeBlock code={botCode} language="python" title="bot.py" />
              </div>
@@ -145,16 +151,6 @@ export const TermuxGuide: React.FC = () => {
 
           {activeTab === 'env' && (
              <div className="space-y-2">
-                <div className="bg-yellow-900/20 border border-yellow-700/50 p-4 rounded-lg text-sm text-yellow-200 flex items-start gap-3">
-                  <FileKey size={20} className="flex-shrink-0" />
-                  <div>
-                    <p className="font-bold mb-1">关于 .env 文件</p>
-                    <p className="opacity-80">
-                      <code>setup.sh</code> 脚本会自动在 Termux 中生成此文件，因此您<strong>不需要</strong>手动创建它。
-                      如果您想手动调试或迁移机器人，请将此内容保存为 <code>.env</code> 文件并放在 <code>bot.py</code> 同级目录。
-                    </p>
-                  </div>
-                </div>
                 <CodeBlock code={envCode} language="bash" title=".env" />
              </div>
           )}

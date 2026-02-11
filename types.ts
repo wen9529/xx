@@ -17,7 +17,8 @@ export interface StreamConfig {
   telegramStreamKey: string;
 
   // Alist Configuration
-  alistPassword: string; // New field for automation
+  alistPassword: string;
+  aria2Secret: string; // New: For offline download security
 
   // File Defaults
   fileName: string;
