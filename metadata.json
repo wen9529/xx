@@ -1,0 +1,5 @@
+{
+  "name": "StreamForge: Alist to Telegram",
+  "description": "A comprehensive toolkit to generate Termux deployment scripts for Alist and configure GitHub Actions workflows for restreaming cloud content to Telegram.",
+  "requestFramePermissions": []
+}
