@@ -1,12 +1,13 @@
 import os
 import logging
 import requests
+import subprocess
+import json
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 
 # 1. 加载配置
-# 尝试加载当前目录下的 .env，如果不存在则尝试用户主目录
 load_dotenv(".env")
 home_env = os.path.expanduser("~/.env")
 if os.path.exists(home_env):
@@ -40,18 +41,30 @@ def get_alist_token():
             if data.get('code') == 200:
                 alist_token = data['data']['token']
                 return alist_token
+            else:
+                logger.error(f"Login Failed: {data}")
     except Exception as e:
         logger.error(f"Alist Login Error: {e}")
     return None
 
-def alist_api(endpoint, data=None):
+def alist_api(endpoint, method="POST", data=None):
     token = alist_token or get_alist_token()
     headers = {"Authorization": token, "Content-Type": "application/json"}
     try:
-        res = requests.post(f"{ALIST_HOST}{endpoint}", json=data, headers=headers, timeout=10)
-        if res.json().get('code') == 401:
+        url = f"{ALIST_HOST}{endpoint}"
+        if method == "GET":
+            res = requests.get(url, headers=headers, timeout=10)
+        else:
+            res = requests.post(url, json=data, headers=headers, timeout=10)
+            
+        if res.status_code == 200 and res.json().get('code') == 401:
+             # Token失效重试
             headers["Authorization"] = get_alist_token()
-            res = requests.post(f"{ALIST_HOST}{endpoint}", json=data, headers=headers, timeout=10)
+            if method == "GET":
+                res = requests.get(url, headers=headers, timeout=10)
+            else:
+                res = requests.post(url, json=data, headers=headers, timeout=10)
+                
         return res.json()
     except Exception as e:
         logger.error(f"API Error: {e}")
@@ -80,33 +93,90 @@ def trigger_github_workflow(file_url, file_name):
     except Exception as e:
         return False, str(e)
 
+# --- 新增：管理功能函数 ---
+def pm2_action(action, service):
+    try:
+        subprocess.run(["pm2", action, service], check=True)
+        return True, f"{service} {action} 成功"
+    except Exception as e:
+        return False, str(e)
+
+def get_system_status():
+    try:
+        # Check Alist Port
+        try:
+            requests.get(f"{ALIST_HOST}/api/public/settings", timeout=2)
+            alist_status = "✅ 运行中"
+        except:
+            alist_status = "❌ 未响应"
+            
+        return f"🖥 **系统状态**\n\nAlist: {alist_status}"
+    except Exception as e:
+        return str(e)
+
+# --- Bot Handlers ---
+
 async def start(update: Update, context):
     if str(update.effective_user.id) != str(ADMIN_ID): return
-    keyboard = [["📂 浏览云盘", "🛑 停止任务"]]
+    keyboard = [
+        ["📂 浏览云盘", "⚙️ 系统管理"],
+        ["🛑 停止推流"]
+    ]
     await update.message.reply_text("👋 *StreamForge 控制台*\n请选择操作：", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True), parse_mode='Markdown')
 
 async def menu_handler(update: Update, context):
     if str(update.effective_user.id) != str(ADMIN_ID): return
     msg = update.message.text.strip()
+    
+    # Main Menu
     if msg == "📂 浏览云盘": 
         await show_file_list(update, "/", 1)
-    elif msg == "🛑 停止任务": 
+    elif msg == "🛑 停止推流": 
         await stop_all_workflows(update)
+    elif msg == "⚙️ 系统管理":
+        keyboard = [
+            ["🔄 重启 Alist", "📊 Alist 状态"],
+            ["💾 存储列表", "🔙 返回主菜单"]
+        ]
+        await update.message.reply_text("⚙️ *系统管理面板*", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True), parse_mode='Markdown')
+    
+    # System Menu
+    elif msg == "🔙 返回主菜单":
+        await start(update, context)
+    elif msg == "🔄 重启 Alist":
+        status_msg = await update.message.reply_text("⏳ 正在重启 Alist...")
+        success, info = pm2_action("restart", "alist")
+        await status_msg.edit_text(f"{'✅' if success else '❌'} {info}")
+    elif msg == "📊 Alist 状态":
+        info = get_system_status()
+        await update.message.reply_text(info, parse_mode='Markdown')
+    elif msg == "💾 存储列表":
+        res = alist_api("/api/admin/storage/list", method="GET")
+        if res.get('code') == 200:
+            content = res['data']['content']
+            text = "💾 *已挂载存储:*"
+            for item in content:
+                status = "🟢" if item['status'] == 'work' else "🔴"
+                text += f"\n{status} `{item['mount_path']}` ({item['driver']})"
+            await update.message.reply_text(text, parse_mode='Markdown')
+        else:
+            await update.message.reply_text(f"❌ 获取失败: {res.get('message', 'Unknown error')}")
+
+    # Direct Link
     elif msg.startswith("http"):
         await update.message.reply_text("🔗 检测到外链，尝试推流...")
         success, info = trigger_github_workflow(msg, "DirectLink.mp4")
         await update.message.reply_text(f"{'✅' if success else '❌'} {info}")
 
 async def show_file_list(obj, path, page):
-    data = alist_api("/api/fs/list", {"path": path, "page": page, "per_page": 10})
+    data = alist_api("/api/fs/list", method="POST", data={"path": path, "page": page, "per_page": 10})
     content = data.get('data', {}).get('content', [])
     total = data.get('data', {}).get('total', 0)
     
     if not content and path == "/":
-        if isinstance(obj, Update):
-            await obj.message.reply_text("❌ Alist 列表为空，请检查挂载或配置。")
-        else:
-            await obj.callback_query.message.reply_text("❌ Alist 列表为空。")
+        msg_text = "❌ Alist 列表为空，请检查挂载或配置。"
+        if isinstance(obj, Update): await obj.message.reply_text(msg_text)
+        else: await obj.callback_query.message.reply_text(msg_text)
         return
 
     content.sort(key=lambda x: x['is_dir'], reverse=True)
@@ -145,7 +215,7 @@ async def callback_handler(update: Update, context):
     if action == "nav":
         await show_file_list(update, path, int(p_idx))
     elif action == "play":
-        res = alist_api("/api/fs/get", {"path": path})
+        res = alist_api("/api/fs/get", method="POST", data={"path": path})
         raw = res.get('data', {}).get('raw_url')
         if raw:
             await query.message.reply_text(f"🚀 启动推流: {os.path.basename(path)}")
