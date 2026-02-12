@@ -199,7 +199,7 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, menu_handler))
     app.add_handler(CallbackQueryHandler(cb_handler))
-    print("Bot Started...")
+    logger.info(f"Bot Started... Token: {'*' * 5}{BOT_TOKEN[-5:] if BOT_TOKEN else 'None'}")
     app.run_polling()
 `;
 
@@ -207,19 +207,28 @@ export const TERMUX_SETUP_SCRIPT = (config: StreamConfig) => `#!/bin/bash
 # StreamForge Ultimate Setup Script
 
 echo "🚀 Starting Setup..."
+
+# 0. Create .env config file FIRST (Ensures variables are saved even if install fails)
+echo "⚙️  Configuring Environment Variables..."
+cat << EOF > .env
+${GENERATE_ENV_CONTENT(config)}
+EOF
+
+# 1. Update and Install System Packages
+echo "📦 Installing System Packages..."
 pkg update -y
 pkg install -y python alist aria2 nodejs git ffmpeg
+
+# 2. Install Node.js Global Packages
+echo "📦 Installing PM2..."
 npm install -g pm2
+
+# 3. Install Python Dependencies
+echo "📦 Installing Python Libs..."
 pip install python-telegram-bot requests python-dotenv
 
 # Generate Aria2 Secret if empty
 ARIA_RPC=${config.aria2Secret}
-
-echo "⚙️  Configuring Environment..."
-# Create .env file with your variables
-cat << EOF > .env
-${GENERATE_ENV_CONTENT(config)}
-EOF
 
 echo "📥 Configuring Aria2 for Alist..."
 mkdir -p ~/.config/aria2
@@ -245,6 +254,7 @@ pm2 start bot.py --name stream-bot --interpreter python
 
 pm2 save
 echo "🎉 Done! Alist Aria2 Secret: $ARIA_RPC"
+echo "ℹ️  Bot Token & Config saved to .env file"
 `;
 
 export const GITHUB_WORKFLOW_TEMPLATE = (config: StreamConfig) => `name: Alist Stream to Telegram
