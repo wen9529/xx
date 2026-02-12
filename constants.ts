@@ -84,6 +84,7 @@ ALIST_PASSWORD=${config.alistPassword}
 CLOUDFLARED_TOKEN=${config.cloudflaredToken}`;
 
 export const PYTHON_BOT_SCRIPT = `import os
+import sys
 import logging
 import requests
 import subprocess
@@ -92,11 +93,19 @@ from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 
-# 1. 加载配置
-load_dotenv(".env")
-home_env = os.path.expanduser("~/.env")
-if os.path.exists(home_env):
-    load_dotenv(home_env)
+# 1. 加载配置 (修复路径问题)
+# 获取当前脚本所在目录，确保 pm2 启动时能找到同目录下的 .env
+script_dir = os.path.dirname(os.path.abspath(__file__))
+env_path = os.path.join(script_dir, ".env")
+
+if os.path.exists(env_path):
+    print(f"📝 Loading config from: {env_path}")
+    load_dotenv(env_path)
+else:
+    print(f"⚠️ Warning: .env file not found at {env_path}, trying fallback locations...")
+    home_env = os.path.expanduser("~/.env")
+    if os.path.exists(home_env):
+        load_dotenv(home_env)
 
 # 2. 获取环境变量
 BOT_TOKEN = os.getenv("TG_BOT_TOKEN")
@@ -110,6 +119,12 @@ ALIST_HOST = os.getenv("ALIST_HOST", "http://127.0.0.1:5244")
 ALIST_PUBLIC_URL = os.getenv("ALIST_PUBLIC_URL")
 ALIST_USER = os.getenv("ALIST_USER", "admin")
 ALIST_PASSWORD = os.getenv("ALIST_PASSWORD", "admin")
+
+# 验证关键变量
+if not BOT_TOKEN:
+    print("❌ Fatal Error: TG_BOT_TOKEN not found in environment variables.")
+    print("👉 Please edit .env file and set TG_BOT_TOKEN.")
+    sys.exit(1)
 
 # 3. 日志配置
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -350,7 +365,7 @@ export const GENERATE_SETUP_SCRIPT = (envContent: string, botContent: string) =>
 
 echo "🚀 开始 StreamForge 环境智能部署..."
 
-# 0. 自动生成配置文件 (解决手动复制的问题)
+# 0. 自动生成配置文件
 echo "📝 正在生成配置文件..."
 
 # 写入 .env
@@ -438,6 +453,13 @@ echo "✅ Alist 管理员密码已重置为: admin"
 # 读取环境变量中的 Cloudflared Token
 source .env
 
+# 验证关键配置是否为空
+if [ -z "$TG_BOT_TOKEN" ]; then
+    echo "⚠️  注意: 检测到 .env 文件中 TG_BOT_TOKEN 为空"
+    echo "⚠️  脚本将继续执行，但在启动 bot 之前，请务必编辑 .env 文件填入 Token！"
+    echo "⚠️  命令: nano .env"
+fi
+
 # 7. 启动服务 (使用 PM2)
 echo "▶️ 启动服务..."
 pm2 start alist --name alist -- server
@@ -447,7 +469,6 @@ if [ -n "$CLOUDFLARED_TOKEN" ]; then
     echo "▶️ 启动 Cloudflared Tunnel (PM2 Managed)..."
     pm2 delete tunnel 2>/dev/null || true
     # Start Cloudflared with PM2.
-    # Note: 'cloudflared' command must be in path.
     pm2 start cloudflared --name tunnel --restart-delay=3000 -- tunnel run --token "$CLOUDFLARED_TOKEN"
 fi
 
@@ -477,5 +498,6 @@ echo "- Alist: http://127.0.0.1:5244 (Local)"
 if [ -n "$ALIST_PUBLIC_URL" ]; then
     echo "- Public: $ALIST_PUBLIC_URL"
 fi
+echo "👉 如果 Bot 状态为 error，请检查 .env 配置并重启: pm2 restart stream-bot"
 echo "--------------------------------"
 `;
