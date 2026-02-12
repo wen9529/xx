@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Terminal, Bot, Github, Save, Shield, Download, Image as ImageIcon, Video, FileText, Clipboard, Check } from 'lucide-react';
-import { DEFAULT_STREAM_CONFIG, PYTHON_BOT_SCRIPT, GITHUB_WORKFLOW_TEMPLATE, GENERATE_ENV_CONTENT } from './constants';
+import { DEFAULT_STREAM_CONFIG, PYTHON_BOT_SCRIPT, GITHUB_WORKFLOW_TEMPLATE, GENERATE_ENV_CONTENT, SETUP_SCRIPT_CONTENT } from './constants';
 import { StreamConfig } from './types';
 
 // Inline CodeBlock Component
@@ -50,7 +50,7 @@ const CodeBlock: React.FC<{ code: string; language?: string; title?: string; fil
 
 const App: React.FC = () => {
   const [config, setConfig] = useState<StreamConfig>(DEFAULT_STREAM_CONFIG);
-  const [activeTab, setActiveTab] = useState<'bot' | 'workflow' | 'env'>('env');
+  const [activeTab, setActiveTab] = useState<'bot' | 'workflow' | 'env' | 'setup'>('setup');
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const { name, value } = e.target;
@@ -60,6 +60,7 @@ const App: React.FC = () => {
   const botCode = PYTHON_BOT_SCRIPT;
   const workflowCode = GITHUB_WORKFLOW_TEMPLATE(config);
   const envCode = GENERATE_ENV_CONTENT(config);
+  const setupCode = SETUP_SCRIPT_CONTENT;
 
   return (
     <div className="flex flex-col h-screen bg-gray-900 text-white font-sans">
@@ -122,6 +123,9 @@ const App: React.FC = () => {
           {/* Output Panel */}
           <div className="w-full lg:w-2/3 flex flex-col bg-gray-800 rounded-xl border border-gray-700 overflow-hidden min-h-[600px]">
             <div className="flex border-b border-gray-700 bg-gray-900/50 overflow-x-auto">
+              <button onClick={() => setActiveTab('setup')} className={`tab-btn ${activeTab === 'setup' ? 'active' : ''}`}>
+                <Terminal size={16} /> setup.sh
+              </button>
               <button onClick={() => setActiveTab('env')} className={`tab-btn ${activeTab === 'env' ? 'active' : ''}`}>
                 <FileText size={16} /> .env
               </button>
@@ -134,6 +138,14 @@ const App: React.FC = () => {
             </div>
 
             <div className="flex-1 p-0 overflow-auto bg-[#1e1e1e]">
+              {activeTab === 'setup' && (
+                <div className="p-6">
+                    <div className="mb-4 text-sm text-gray-400">
+                      <b>Installation Script:</b> Save as <code>setup.sh</code> and run <code>bash setup.sh</code> in Termux.
+                    </div>
+                    <CodeBlock code={setupCode} language="bash" filename="setup.sh" />
+                </div>
+              )}
               {activeTab === 'bot' && (
                 <div className="p-6">
                     <div className="mb-4 text-sm text-gray-400">
