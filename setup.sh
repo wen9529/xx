@@ -5,8 +5,9 @@
 echo "🚀 开始安装依赖环境..."
 
 # 1. 更新包管理器并安装基础工具
+# 新增 aria2，因为 Alist 离线下载通常需要它
 pkg update -y && pkg upgrade -y
-pkg install -y python ffmpeg git nodejs wget
+pkg install -y python ffmpeg git nodejs wget aria2
 
 # 2. 安装 Python 依赖
 echo "🐍 安装 Python 库..."
@@ -14,7 +15,6 @@ pip install python-telegram-bot requests python-dotenv
 
 # 3. 安装 Cloudflared (用于内网穿透)
 echo "☁️ 正在安装 Cloudflared (用于远程访问)..."
-# Termux 通常运行在 ARM64 架构上
 if [ ! -f "cloudflared" ]; then
     echo "下载 cloudflared-linux-android-arm64..."
     wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-android-arm64 -O cloudflared
@@ -55,5 +55,5 @@ else
 fi
 
 echo "🎉 安装完成！"
-echo "请确保 Alist 已经在后台运行 (alist server)。"
+echo "请确保 Alist 已经在后台运行 (alist server) 且已安装 aria2 (pkg install aria2)。"
 echo "运行机器人: python bot.py"

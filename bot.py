@@ -92,6 +92,18 @@ def alist_api(endpoint, method="POST", data=None):
     except Exception as e:
         return {"code": 500, "message": str(e)}
 
+async def add_offline_task(update, url):
+    await update.message.reply_text("⏳ 正在提交 Aria2 离线任务...")
+    # 尝试多种 API 路径以兼容不同版本的 Alist
+    res = alist_api("/api/fs/offline/add", data={"path": "/", "urls": [url], "tool": "aria2"})
+    if res.get('code') != 200:
+            res = alist_api("/api/fs/add_offline_download", data={"paths": ["/"], "urls": [url], "tool": "aria2"})
+    
+    if res.get('code') == 200:
+        await update.message.reply_text(f"✅ 任务已添加！\n文件将下载到根目录。")
+    else:
+        await update.message.reply_text(f"❌ 添加失败: {res.get('message')}")
+
 # --- Cloudflare Tunnel 管理 ---
 
 async def start_cloudflared():
@@ -104,8 +116,10 @@ async def start_cloudflared():
         return None
 
     try:
+        # 清理旧日志
+        if os.path.exists("tunnel.log"): os.remove("tunnel.log")
+
         # 启动 cloudflared tunnel
-        # 使用 metrics server 避免 log 解析的复杂性，或者直接解析 stderr
         cmd = [CLOUDFLARED_BIN, "tunnel", "--url", ALIST_HOST, "--logfile", "tunnel.log"]
         tunnel_process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         
@@ -115,13 +129,11 @@ async def start_cloudflared():
             if os.path.exists("tunnel.log"):
                 with open("tunnel.log", "r") as f:
                     content = f.read()
-                    # 匹配 trycloudflare.com 的 URL
                     match = re.search(r'https://[a-zA-Z0-9-]+\.trycloudflare\.com', content)
                     if match:
                         current_public_url = match.group(0)
                         return current_public_url
         
-        # 超时未获取到
         stop_cloudflared()
         return None
     except Exception as e:
@@ -134,14 +146,9 @@ def stop_cloudflared():
         tunnel_process.terminate()
         tunnel_process = None
     current_public_url = None
-    # 清理日志
-    if os.path.exists("tunnel.log"):
-        os.remove("tunnel.log")
 
 def get_effective_public_url():
-    """获取当前有效的公网地址（优先使用隧道，其次配置的静态地址）"""
-    if current_public_url:
-        return current_public_url
+    if current_public_url: return current_public_url
     return ALIST_PUBLIC_URL_STATIC
 
 # --- GitHub Workflow ---
@@ -150,30 +157,23 @@ def trigger_github_workflow(file_url, target_rtmp):
     if not all([GITHUB_OWNER, GITHUB_REPO, GITHUB_PAT]):
         return False, "GitHub 配置缺失"
     
-    # 动态替换为公网地址
     public_base = get_effective_public_url()
     final_url = file_url
     
+    # 将内网链接转换为公网链接
     if public_base:
-        # 如果原始 URL 是内网 IP，进行替换
         if "127.0.0.1" in final_url or "localhost" in final_url:
-            # 移除内网部分，拼接公网部分
-            # 假设 Alist 返回的是 http://127.0.0.1:5244/d/local/...
-            # 或者是相对路径 /d/local/...
             if final_url.startswith("http"):
-                 # 简单粗暴替换 host
                  final_url = final_url.replace(ALIST_HOST, public_base).replace("http://127.0.0.1:5244", public_base)
             else:
                  final_url = f"{public_base}{final_url}"
     else:
-        # 如果没有公网地址，且 URL 是内网的，GitHub Actions 将无法访问
         if "127.0.0.1" in final_url or "localhost" in final_url:
-            return False, "⚠️ 错误：未开启公网访问 (隧道)，GitHub 无法下载内网文件。请先点击'🌐 开启远程访问'。"
+            return False, "⚠️ 未开启远程访问 (隧道)，GitHub 无法连接内网文件。请先点击菜单中的 '🌐 开启/关闭 远程访问'。"
 
-    logger.info(f"提交给 GitHub 的文件流地址: {final_url}")
+    logger.info(f"Stream URL: {final_url}")
 
     inputs = {"file_url": final_url, "rtmp_url": target_rtmp}
-    
     url = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/actions/workflows/stream.yml/dispatches"
     headers = {
         "Authorization": f"Bearer {GITHUB_PAT}",
@@ -197,13 +197,14 @@ async def start(update: Update, context):
         return
     
     context.user_data.clear()
+    # 调整菜单布局，确保离线下载按钮显眼
     keyboard = [
         ["📂 浏览云盘", "🧲 离线下载"],
-        ["🌐 远程访问", "🔑 密钥管理"],
-        ["🛑 停止推流", "⚙️ 系统状态"]
+        ["🌐 开启/关闭 远程访问", "🔐 查看登录信息"],
+        ["🛑 停止推流", "🔑 密钥管理"]
     ]
     await update.message.reply_text(
-        "👋 **StreamForge 控制台**\n请选择操作：",
+        "👋 **StreamForge 控制台**\n\n📌 **提示**: 直接发送磁力链接或 HTTP 链接可快速开始下载。",
         reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True),
         parse_mode='Markdown'
     )
@@ -212,7 +213,12 @@ async def menu_handler(update: Update, context):
     if str(update.effective_user.id) != str(ADMIN_ID): return
     msg = update.message.text.strip()
     
-    # 状态机：处理离线下载链接输入
+    # 1. 优先处理直接发送的链接（快速离线下载）
+    if msg.startswith("magnet:?") or (msg.startswith("http") and not context.user_data.get('state')):
+        await add_offline_task(update, msg)
+        return
+
+    # 2. 处理状态机（手动点击按钮后的输入）
     state = context.user_data.get('state')
     if state == 'AWAITING_LINK':
         if msg == "/cancel":
@@ -220,25 +226,14 @@ async def menu_handler(update: Update, context):
             await update.message.reply_text("已取消")
             await start(update, context)
             return
-        
-        await update.message.reply_text("⏳ 正在提交 Aria2 任务...")
-        res = alist_api("/api/fs/offline/add", data={"path": "/", "urls": [msg], "tool": "aria2"})
-        if res.get('code') != 200:
-             res = alist_api("/api/fs/add_offline_download", data={"paths": ["/"], "urls": [msg], "tool": "aria2"})
-        
-        if res.get('code') == 200:
-            await update.message.reply_text("✅ 离线任务添加成功！")
-        else:
-            await update.message.reply_text(f"❌ 添加失败: {res.get('message')}")
-        
+        await add_offline_task(update, msg)
         context.user_data['state'] = None
         return
 
-    # 状态机：处理添加密钥
     if state == 'AWAITING_KEY_NAME':
         context.user_data['new_key_name'] = msg
         context.user_data['state'] = 'AWAITING_KEY_URL'
-        await update.message.reply_text(f"📝 名称: {msg}\n👉 请输入完整 RTMP 地址 (包含密钥):")
+        await update.message.reply_text(f"📝 名称: {msg}\n👉 请输入完整 RTMP 地址:")
         return
     
     if state == 'AWAITING_KEY_URL':
@@ -250,32 +245,35 @@ async def menu_handler(update: Update, context):
         await update.message.reply_text(f"✅ 密钥 **{name}** 已保存", parse_mode='Markdown')
         return
 
-    # 主菜单命令
+    # 3. 处理菜单按钮
     if msg == "📂 浏览云盘":
         await update.message.reply_text("🔍 读取根目录...")
         await show_file_list(update, "/", 1)
         
     elif msg == "🧲 离线下载":
         context.user_data['state'] = 'AWAITING_LINK'
-        await update.message.reply_text("📥 **请发送磁力链接 (Magnet) 或 HTTP 链接**\n发送 /cancel 取消", parse_mode='Markdown')
+        await update.message.reply_text("📥 **请发送磁力链接 (Magnet) 或 HTTP 链接**\n(或者直接粘贴链接给我，无需点此按钮)", parse_mode='Markdown')
 
-    elif msg == "🌐 远程访问":
-        keyboard = [
-            [InlineKeyboardButton("🚀 开启/刷新 隧道", callback_data="tunnel_start")],
-            [InlineKeyboardButton("⛔ 关闭 隧道", callback_data="tunnel_stop")],
-            [InlineKeyboardButton("📋 查看登录信息", callback_data="show_login")]
-        ]
-        
-        status_text = "Checking..."
+    elif msg == "🌐 开启/关闭 远程访问":
         if current_public_url:
-            status_text = f"🟢 **在线**\n🔗 地址: `{current_public_url}`"
-        elif ALIST_PUBLIC_URL_STATIC:
-             status_text = f"🔵 **静态配置**\n🔗 地址: `{ALIST_PUBLIC_URL_STATIC}`"
+            stop_cloudflared()
+            await update.message.reply_text("🚫 隧道已关闭。外网访问已停止。")
         else:
-            status_text = "🔴 **未开启** (外网无法访问)"
+            msg_wait = await update.message.reply_text("⏳ 正在启动 Cloudflare 隧道 (需 5-10 秒)...")
+            url = await start_cloudflared()
+            if url:
+                await msg_wait.edit_text(f"✅ **远程访问已开启**\n\n🔗 公网地址: `{url}`\n\n您现在可以在外网访问 Alist 管理页面。", parse_mode='Markdown')
+            else:
+                await msg_wait.edit_text("❌ 启动失败。请确保 setup.sh 已成功安装 cloudflared。")
 
-        await update.message.reply_text(f"🌐 **公网访问状态**:\n{status_text}", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
-        
+    elif msg == "🔐 查看登录信息":
+        url = get_effective_public_url() or ALIST_HOST
+        status = " (内网)" if "127.0.0.1" in url else " (公网)"
+        await update.message.reply_text(
+            f"🔐 **Alist 登录凭证**{status}\n\n🔗 地址: `{url}`\n👤 用户: `{ALIST_USER}`\n🔑 密码: `{ALIST_PASSWORD}`",
+            parse_mode='Markdown'
+        )
+
     elif msg == "🔑 密钥管理":
         keys = load_keys()
         text = "🔑 **保存的推流地址**：\n"
@@ -292,11 +290,11 @@ async def menu_handler(update: Update, context):
     elif msg == "⚙️ 系统状态":
         try:
             res = requests.get(f"{ALIST_HOST}/api/public/settings", timeout=2)
-            alist_status = "✅ Alist 在线" if res.status_code == 200 else "❌ Alist 异常"
+            alist_status = "✅ Alist 运行中" if res.status_code == 200 else "❌ Alist 未响应"
         except:
-            alist_status = "❌ 无法连接 Alist"
+            alist_status = "❌ Alist 无法连接"
             
-        tunnel_status = "✅ 隧道开启" if current_public_url else "⚪ 隧道关闭"
+        tunnel_status = f"✅ 隧道开启 ({current_public_url})" if current_public_url else "⚪ 隧道关闭"
         
         await update.message.reply_text(f"🖥 **系统状态**:\n{alist_status}\n{tunnel_status}", parse_mode='Markdown')
 
@@ -311,7 +309,6 @@ async def show_file_list(update: Update, path, page):
 
     content = res['data']['content'] or []
     total = res['data']['total']
-    
     content.sort(key=lambda x: x['is_dir'], reverse=True)
     
     buttons = []
@@ -336,7 +333,6 @@ async def show_file_list(update: Update, path, page):
 
     markup = InlineKeyboardMarkup(buttons)
     text = f"📂 路径: `{path}`"
-    
     if is_cb:
         await message.edit_text(text, reply_markup=markup, parse_mode='Markdown')
     else:
@@ -351,25 +347,6 @@ async def callback_handler(update: Update, context):
     if action == "nav":
         await show_file_list(update, data[1], int(data[2]))
     
-    elif action == "tunnel_start":
-        await query.message.edit_text("⏳ 正在启动 Cloudflare 隧道，请稍候...")
-        url = await start_cloudflared()
-        if url:
-            await query.message.edit_text(f"✅ **隧道已建立**\n\n🔗 公网地址: `{url}`\n\n⚠️ 此地址为临时地址，重启脚本后会改变。", parse_mode='Markdown')
-        else:
-            await query.message.edit_text("❌ 启动失败。请检查是否已运行 setup.sh 安装 cloudflared，或查看日志。")
-            
-    elif action == "tunnel_stop":
-        stop_cloudflared()
-        await query.message.edit_text("🚫 隧道已关闭。外网将无法访问。", parse_mode='Markdown')
-
-    elif action == "show_login":
-        url = get_effective_public_url() or ALIST_HOST
-        await query.message.reply_text(
-            f"🔐 **Alist 登录信息**\n\n地址: `{url}`\n用户: `{ALIST_USER}`\n密码: `{ALIST_PASSWORD}`",
-            parse_mode='Markdown'
-        )
-
     elif action == "pre_stream":
         path = data[1]
         context.user_data['pending_path'] = path
@@ -405,7 +382,6 @@ async def callback_handler(update: Update, context):
             await query.message.edit_text(f"❌ 无法获取文件直链: {res.get('message')}")
             return
 
-        # 触发 GitHub Workflow
         success, msg = trigger_github_workflow(raw_url, target_rtmp)
         icon = "✅" if success else "❌"
         await query.message.reply_text(f"{icon} 推流请求结果: {msg}")
@@ -425,7 +401,7 @@ async def callback_handler(update: Update, context):
         await query.message.delete()
 
 async def stop_workflow(update):
-    msg = await update.message.reply_text("🛑 正在尝试停止 GitHub 任务...")
+    msg = await update.message.reply_text("🛑 正在停止 GitHub 任务...")
     headers = {"Authorization": f"Bearer {GITHUB_PAT}", "Accept": "application/vnd.github+json"}
     try:
         url = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/actions/runs?status=in_progress"
@@ -435,7 +411,7 @@ async def stop_workflow(update):
             if run['name'] == 'Alist Stream to Telegram':
                 requests.post(f"{url[:-19]}/runs/{run['id']}/cancel", headers=headers)
                 count += 1
-        await msg.edit_text(f"✅ 已发送停止指令给 {count} 个正在运行的任务。")
+        await msg.edit_text(f"✅ 已停止 {count} 个任务。")
     except Exception as e:
         await msg.edit_text(f"❌ 停止失败: {e}")
 
