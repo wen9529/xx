@@ -93,19 +93,29 @@ from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 
-# 1. 加载配置 (修复路径问题)
-# 获取当前脚本所在目录，确保 pm2 启动时能找到同目录下的 .env
-script_dir = os.path.dirname(os.path.abspath(__file__))
-env_path = os.path.join(script_dir, ".env")
+# 1. 智能加载配置
+# 获取当前脚本绝对路径
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(current_dir)
 
-if os.path.exists(env_path):
-    print(f"📝 Loading config from: {env_path}")
-    load_dotenv(env_path)
+# 优先级: 当前目录 > 上级目录 > 用户Home目录
+env_paths = [
+    os.path.join(current_dir, ".env"),
+    os.path.join(parent_dir, ".env"),
+    os.path.expanduser("~/.env")
+]
+
+config_path = None
+for path in env_paths:
+    if os.path.exists(path):
+        config_path = path
+        break
+
+if config_path:
+    print(f"📝 Loading config from: {config_path}")
+    load_dotenv(config_path)
 else:
-    print(f"⚠️ Warning: .env file not found at {env_path}, trying fallback locations...")
-    home_env = os.path.expanduser("~/.env")
-    if os.path.exists(home_env):
-        load_dotenv(home_env)
+    print("⚠️ Warning: .env file not found in current, parent, or home directories. Relying on system environment variables.")
 
 # 2. 获取环境变量
 BOT_TOKEN = os.getenv("TG_BOT_TOKEN")
@@ -123,7 +133,8 @@ ALIST_PASSWORD = os.getenv("ALIST_PASSWORD", "admin")
 # 验证关键变量
 if not BOT_TOKEN:
     print("❌ Fatal Error: TG_BOT_TOKEN not found in environment variables.")
-    print("👉 Please edit .env file and set TG_BOT_TOKEN.")
+    print(f"👉 Checked paths: {', '.join(env_paths)}")
+    print("👉 Please create a .env file in one of these locations.")
     sys.exit(1)
 
 # 3. 日志配置
