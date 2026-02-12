@@ -1,5 +1,5 @@
 {
+  "requestFramePermissions": [],
   "name": "xx",
-  "description": "A comprehensive toolkit to generate Termux deployment scripts for Alist and configure GitHub Actions workflows for restreaming cloud content to Telegram.",
-  "requestFramePermissions": []
+  "description": ""
 }

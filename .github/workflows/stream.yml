@@ -4,67 +4,38 @@ on:
   workflow_dispatch:
     inputs:
       file_url:
-        description: 'Media URL (Video or Audio)'
+        description: 'Direct URL of the video file'
         required: true
-      image_url:
-        description: 'Cover Image URL (For Audio Mode)'
-        required: false
       rtmp_url:
-        description: 'RTMP URL'
+        description: 'Target RTMP URL'
         required: true
 
 jobs:
   stream:
     runs-on: ubuntu-latest
-    timeout-minutes: 360 # 6 Hours Max
+    timeout-minutes: 360  # 最大运行 6 小时
+
     steps:
-      - uses: actions/checkout@v3
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Install FFmpeg
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg
-      
-      - name: Stream to Telegram
         run: |
-          FILE_URL="${{ github.event.inputs.file_url }}"
-          IMAGE_URL="${{ github.event.inputs.image_url }}"
-          RTMP_URL="${{ github.event.inputs.rtmp_url }}"
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Start Streaming
+        run: |
+          FILE_URL="${{ inputs.file_url }}"
+          RTMP_URL="${{ inputs.rtmp_url }}"
           
-          # High Quality Audio Settings: AAC 320k 48kHz
-          # High Quality Video Settings: 6000k bitrate, Medium Preset, 1080p
+          echo "Source: $FILE_URL"
+          echo "Target: RTMP Server"
           
-          if [ -n "$IMAGE_URL" ]; then
-            echo "🎵 Audio + Image Mode Detected"
-            echo "Audio: $FILE_URL"
-            echo "Image: $IMAGE_URL"
-            
-            # -loop 1: Loop the image
-            # -framerate 30: Create 30fps video
-            # -shortest: End stream when audio ends
-            # -tune stillimage: Optimize encoding for static image
-            
-            ffmpeg -re \
-              -loop 1 -framerate 30 -i "$IMAGE_URL" \
-              -i "$FILE_URL" \
-              -c:v libx264 -preset medium -tune stillimage -b:v 4000k -maxrate 4000k -bufsize 8000k \
-              -vf "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,format=yuv420p" \
-              -c:a aac -b:a 320k -ar 48000 -ac 2 \
-              -shortest \
-              -f flv "$RTMP_URL"
-              
-          else
-            echo "🎬 Video Mode Detected"
-            echo "Video: $FILE_URL"
-            
-            # -reconnect flags: Robustness against network drops
-            # -preset medium: Better quality than veryfast
-            # -profile:v high: High profile for better quality
-            
-            ffmpeg -re \
-              -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 5 \
-              -i "$FILE_URL" \
-              -c:v libx264 -preset medium -profile:v high -level 4.1 \
-              -b:v 6000k -maxrate 6000k -bufsize 12000k \
-              -vf "scale=1920:-2:flags=lanczos" \
-              -pix_fmt yuv420p -g 60 \
-              -c:a aac -b:a 320k -ar 48000 -ac 2 \
-              -f flv "$RTMP_URL"
-          fi
+          # FFmpeg 推流命令
+          # -re: 按本机帧率读取输入（模拟实时流）
+          # -i: 输入文件
+          # -c:v copy -c:a copy: 直接复制流，不转码（节省 CPU，速度最快，但要求源文件编码兼容）
+          # 如果遇到编码问题，可以将 -c:v copy 改为 -c:v libx264 -preset veryfast -b:v 4000k
+          
+          ffmpeg -re -i "$FILE_URL" -c:v copy -c:a aac -strict experimental -f flv "$RTMP_URL"
