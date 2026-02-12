@@ -197,17 +197,29 @@ async def start(update: Update, context):
         return
     
     context.user_data.clear()
-    # 调整菜单布局，确保离线下载按钮显眼
+    
+    # 重新设计键盘布局，将离线下载单独一行，确保显示
     keyboard = [
-        ["📂 浏览云盘", "🧲 离线下载"],
+        ["📂 浏览云盘"],
+        ["🧲 离线下载"],
         ["🌐 开启/关闭 远程访问", "🔐 查看登录信息"],
         ["🛑 停止推流", "🔑 密钥管理"]
     ]
+    
     await update.message.reply_text(
-        "👋 **StreamForge 控制台**\n\n📌 **提示**: 直接发送磁力链接或 HTTP 链接可快速开始下载。",
+        "👋 **StreamForge 控制台**\n\n"
+        "👇 **请使用下方键盘操作**\n"
+        "💡 提示：如果未看到键盘，请点击输入框右侧的图标，或输入 /menu 重试。\n"
+        "📌 快捷方式：直接发送磁力链接给我也能下载。",
         reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True),
         parse_mode='Markdown'
     )
+
+async def download_command(update: Update, context):
+    """专用下载命令处理"""
+    if str(update.effective_user.id) != str(ADMIN_ID): return
+    context.user_data['state'] = 'AWAITING_LINK'
+    await update.message.reply_text("📥 **请发送磁力链接 (Magnet) 或 HTTP 链接**", parse_mode='Markdown')
 
 async def menu_handler(update: Update, context):
     if str(update.effective_user.id) != str(ADMIN_ID): return
@@ -419,6 +431,7 @@ if __name__ == "__main__":
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("menu", start))
+    app.add_handler(CommandHandler("download", download_command)) # 添加单独的命令
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, menu_handler))
     app.add_handler(CallbackQueryHandler(callback_handler))
     
