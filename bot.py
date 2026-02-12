@@ -6,7 +6,11 @@ from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 
-load_dotenv()
+# Load .env from User Home Directory (Termux Root)
+home_dir = os.path.expanduser("~")
+env_path = os.path.join(home_dir, ".env")
+load_dotenv(env_path)
+
 BOT_TOKEN = os.getenv("TG_BOT_TOKEN")
 ADMIN_ID = os.getenv("TG_ADMIN_ID")
 GITHUB_OWNER = os.getenv("GITHUB_OWNER")

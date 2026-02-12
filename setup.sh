@@ -3,11 +3,19 @@
 
 echo "🚀 Starting Setup..."
 
-# 0. Create .env config file FIRST (Ensures variables are saved even if install fails)
-echo "⚙️  Configuring Environment Variables..."
-cat << EOF > .env
+# 0. Safety Check for .env file in HOME Directory
+ENV_FILE="$HOME/.env"
+
+if [ -f "$ENV_FILE" ]; then
+  echo "⚠️  Found existing .env file at $ENV_FILE"
+  echo "    Skipping configuration generation to protect your secrets."
+  echo "    To overwrite, run: rm $ENV_FILE"
+else
+  echo "⚙️  Configuring Environment Variables in $ENV_FILE..."
+  cat << EOF > "$ENV_FILE"
 ${GENERATE_ENV_CONTENT(config)}
 EOF
+fi
 
 # 1. Update and Install System Packages
 echo "📦 Installing System Packages..."
@@ -49,4 +57,4 @@ pm2 start bot.py --name stream-bot --interpreter python
 
 pm2 save
 echo "🎉 Done! Alist Aria2 Secret: $ARIA_RPC"
-echo "ℹ️  Bot Token & Config saved to .env file"
+echo "ℹ️  Bot Token & Config saved to: $ENV_FILE"

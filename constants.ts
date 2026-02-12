@@ -38,7 +38,11 @@ from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 
-load_dotenv()
+# Load .env from User Home Directory (Termux Root)
+home_dir = os.path.expanduser("~")
+env_path = os.path.join(home_dir, ".env")
+load_dotenv(env_path)
+
 BOT_TOKEN = os.getenv("TG_BOT_TOKEN")
 ADMIN_ID = os.getenv("TG_ADMIN_ID")
 GITHUB_OWNER = os.getenv("GITHUB_OWNER")
@@ -208,11 +212,19 @@ export const TERMUX_SETUP_SCRIPT = (config: StreamConfig) => `#!/bin/bash
 
 echo "🚀 Starting Setup..."
 
-# 0. Create .env config file FIRST (Ensures variables are saved even if install fails)
-echo "⚙️  Configuring Environment Variables..."
-cat << EOF > .env
+# 0. Safety Check for .env file in HOME Directory
+ENV_FILE="\$HOME/.env"
+
+if [ -f "\$ENV_FILE" ]; then
+  echo "⚠️  Found existing .env file at \$ENV_FILE"
+  echo "    Skipping configuration generation to protect your secrets."
+  echo "    To overwrite, run: rm \$ENV_FILE"
+else
+  echo "⚙️  Configuring Environment Variables in \$ENV_FILE..."
+  cat << EOF > "\$ENV_FILE"
 ${GENERATE_ENV_CONTENT(config)}
 EOF
+fi
 
 # 1. Update and Install System Packages
 echo "📦 Installing System Packages..."
@@ -254,7 +266,7 @@ pm2 start bot.py --name stream-bot --interpreter python
 
 pm2 save
 echo "🎉 Done! Alist Aria2 Secret: $ARIA_RPC"
-echo "ℹ️  Bot Token & Config saved to .env file"
+echo "ℹ️  Bot Token & Config saved to: \$ENV_FILE"
 `;
 
 export const GITHUB_WORKFLOW_TEMPLATE = (config: StreamConfig) => `name: Alist Stream to Telegram
