@@ -29,55 +29,88 @@ ALIST_PASSWORD=${config.alistPassword}`;
 
 export const SETUP_SCRIPT_CONTENT = `#!/bin/bash
 
-echo "🚀 开始 StreamForge 环境部署..."
+echo "🚀 开始 StreamForge 环境智能部署..."
 
-# 1. 更新 Termux 源并安装基础包
-echo "📦 正在更新软件源并安装依赖 (Python, Alist, FFmpeg, Node.js)..."
+# 函数：检查并安装软件包
+check_install() {
+    if ! command -v $1 &> /dev/null; then
+        echo "📦 正在安装 $2..."
+        pkg install -y $2
+    else
+        echo "✅ $1 已安装，跳过。"
+    fi
+}
+
+# 1. 更新软件源
+echo "🔄 正在同步软件源..."
 pkg update -y
-pkg install -y python alist ffmpeg git nodejs
 
-# 2. 安装 PM2 (用于后台进程管理)
-echo "📦 正在安装 PM2..."
-npm install -g pm2
+# 2. 检查基础软件包
+check_install python python
+check_install alist alist
+check_install ffmpeg ffmpeg
+check_install git git
+check_install node nodejs
 
-# 3. 安装 Python 依赖库
-echo "📦 正在安装 Python 库 (Telegram Bot, Requests)..."
-pip install python-telegram-bot requests python-dotenv
-
-# 4. 启动 Alist (如果尚未运行)
-echo "⚙️ 启动 Alist 服务..."
-# 使用 PM2 管理 Alist，避免后台被杀
-pm2 start alist --name alist -- server
-
-# 5. 启动 Telegram Bot
-echo "🤖 启动 Bot..."
-# 确保 bot.py 存在
-if [ -f "bot.py" ]; then
-    pm2 start bot.py --name stream-bot --interpreter python
-    echo "✅ Bot 已通过 PM2 启动"
+# 3. 检查 PM2 (Node.js 模块)
+if ! command -v pm2 &> /dev/null; then
+    echo "📦 正在安装 PM2 进程管理器..."
+    npm install -g pm2
 else
-    echo "⚠️ 未找到 bot.py，请确保文件已保存，然后手动运行: pm2 start bot.py --interpreter python"
+    echo "✅ PM2 已安装，跳过。"
 fi
 
-# 6. 保存 PM2 状态 (开机自启)
+# 4. 检查并更新 Python 依赖
+echo "📦 检查 Python 依赖库 (telegram, requests, dotenv)..."
+pip install python-telegram-bot requests python-dotenv --upgrade
+
+# 5. 配置并启动服务 (使用 PM2)
+echo "⚙️ 配置服务自动化..."
+
+# 停止并删除旧的 PM2 任务以免重复
+pm2 delete alist stream-bot 2>/dev/null
+
+# 启动 Alist
+echo "▶️ 启动 Alist 服务..."
+pm2 start alist --name alist -- server
+
+# 启动 Bot
+if [ -f "bot.py" ]; then
+    echo "▶️ 启动 Telegram Bot..."
+    pm2 start bot.py --name stream-bot --interpreter python
+else
+    echo "❌ 错误: 未在当前目录找到 bot.py 文件！"
+    echo "请先确保 bot.py 内容已正确保存到本地。"
+fi
+
+# 6. 保存 PM2 状态以实现持久化
 pm2 save
 
-echo "🎉 部署完成！"
-echo "👉 Alist 地址: http://127.0.0.1:5244 (默认密码请查看 Alist 文档或终端输出)"
-echo "👉 Bot 状态: 使用 'pm2 status' 查看"
+echo ""
+echo "🎉 部署脚本执行完毕！"
+echo "--------------------------------"
+echo "📊 当前运行状态:"
+pm2 status
+echo "--------------------------------"
+echo "💡 提示:"
+echo "- 查看日志: pm2 logs stream-bot"
+echo "- 重启 Bot: pm2 restart stream-bot"
+echo "- Alist 地址: http://127.0.0.1:5244"
+echo "--------------------------------"
 `;
 
 export const PYTHON_BOT_SCRIPT = `import os
 import logging
 import requests
-import mimetypes
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 
 # 1. 加载配置
-home_dir = os.path.expanduser("~")
-load_dotenv(os.path.join(home_dir, ".env"))
+load_dotenv(".env")
+home_env = os.path.expanduser("~/.env")
+if os.path.exists(home_env):
+    load_dotenv(home_env)
 
 # 2. 获取环境变量
 BOT_TOKEN = os.getenv("TG_BOT_TOKEN")
@@ -97,14 +130,11 @@ logger = logging.getLogger(__name__)
 
 alist_token = None
 
-# --- 核心函数 ---
-
 def get_alist_token():
-    """获取 Alist Token"""
     global alist_token
     try:
         url = f"{ALIST_HOST}/api/auth/login"
-        res = requests.post(url, json={"username": ALIST_USER, "password": ALIST_PASSWORD})
+        res = requests.post(url, json={"username": ALIST_USER, "password": ALIST_PASSWORD}, timeout=10)
         if res.status_code == 200:
             data = res.json()
             if data.get('code') == 200:
@@ -115,34 +145,28 @@ def get_alist_token():
     return None
 
 def alist_api(endpoint, data=None):
-    """通用 Alist API 请求"""
     token = alist_token or get_alist_token()
     headers = {"Authorization": token, "Content-Type": "application/json"}
     try:
-        res = requests.post(f"{ALIST_HOST}{endpoint}", json=data, headers=headers)
-        # 如果 Token 失效 (401)，重新获取并重试
+        res = requests.post(f"{ALIST_HOST}{endpoint}", json=data, headers=headers, timeout=10)
         if res.json().get('code') == 401:
             headers["Authorization"] = get_alist_token()
-            res = requests.post(f"{ALIST_HOST}{endpoint}", json=data, headers=headers)
+            res = requests.post(f"{ALIST_HOST}{endpoint}", json=data, headers=headers, timeout=10)
         return res.json()
     except Exception as e:
         logger.error(f"API Error: {e}")
         return {}
 
 def trigger_github_workflow(file_url, file_name):
-    """触发 GitHub Action 推流"""
-    inputs = {
-        "file_url": file_url,
-        "rtmp_url": RTMP_URL
-    }
+    if not all([GITHUB_OWNER, GITHUB_REPO, GITHUB_PAT]):
+        return False, "GitHub 配置缺失"
     
-    # 简单的文件类型判断
+    inputs = {"file_url": file_url, "rtmp_url": RTMP_URL}
     ext = file_name.split('.')[-1].lower()
+    mode = "🎬 视频模式"
     if ext in ['mp3', 'flac', 'wav', 'm4a', 'aac', 'ogg']:
-        inputs["image_url"] = DEFAULT_COVER # 音频模式需要封面
+        inputs["image_url"] = DEFAULT_COVER
         mode = "🎵 音频模式"
-    else:
-        mode = "🎬 视频模式"
 
     url = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/actions/workflows/stream.yml/dispatches"
     headers = {
@@ -150,150 +174,84 @@ def trigger_github_workflow(file_url, file_name):
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28"
     }
-    
     try:
-        res = requests.post(url, json={"ref": "main", "inputs": inputs}, headers=headers)
+        res = requests.post(url, json={"ref": "main", "inputs": inputs}, headers=headers, timeout=15)
         return res.status_code == 204, mode
     except Exception as e:
         return False, str(e)
 
-# --- Bot 交互逻辑 ---
-
 async def start(update: Update, context):
-    """/start 命令"""
     if str(update.effective_user.id) != str(ADMIN_ID): return
-    
     keyboard = [["📂 浏览云盘", "🛑 停止任务"]]
-    await update.message.reply_text(
-        "👋 *StreamForge 控制台*\\n请选择操作：",
-        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True),
-        parse_mode='Markdown'
-    )
+    await update.message.reply_text("👋 *StreamForge 控制台*\\n请选择操作：", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True), parse_mode='Markdown')
 
 async def menu_handler(update: Update, context):
-    """处理菜单按钮"""
     if str(update.effective_user.id) != str(ADMIN_ID): return
     msg = update.message.text.strip()
-    
-    if msg == "📂 浏览云盘":
-        await show_file_list(update, "/", 1)
-    elif msg == "🛑 停止任务":
-        await stop_all_workflows(update)
-    else:
-        # 允许直接发送直链
-        if msg.startswith("http"):
-            await update.message.reply_text("🔗 检测到链接，尝试推流...")
-            success, info = trigger_github_workflow(msg, "DirectLink.mp4")
-            if success:
-                await update.message.reply_text(f"✅ 推流请求已发送 ({info})")
-            else:
-                await update.message.reply_text(f"❌ 请求失败: {info}")
+    if msg == "📂 浏览云盘": await show_file_list(update, "/", 1)
+    elif msg == "🛑 停止任务": await stop_all_workflows(update)
+    elif msg.startswith("http"):
+        success, info = trigger_github_workflow(msg, "Link.mp4")
+        await update.message.reply_text(f"{'✅' if success else '❌'} {info}")
 
 async def show_file_list(obj, path, page):
-    """显示 Alist 文件列表 (支持翻页)"""
     data = alist_api("/api/fs/list", {"path": path, "page": page, "per_page": 10})
     content = data.get('data', {}).get('content', [])
     total = data.get('data', {}).get('total', 0)
-    
-    # 排序：文件夹在前
     content.sort(key=lambda x: x['is_dir'], reverse=True)
-    
     buttons = []
-    # 返回上级按钮
     if path != "/":
-        parent_dir = os.path.dirname(path.rstrip('/')) or "/"
-        buttons.append([InlineKeyboardButton("🔙 返回上级", callback_data=f"nav|{parent_dir}|1")])
-    
+        parent = os.path.dirname(path.rstrip('/')) or "/"
+        buttons.append([InlineKeyboardButton("🔙 返回上级", callback_data=f"nav|{parent}|1")])
     for item in content:
-        name = item['name']
-        full_path = f"{path.rstrip('/')}/{name}"
-        
-        if item['is_dir']:
-            buttons.append([InlineKeyboardButton(f"📁 {name}", callback_data=f"nav|{full_path}|1")])
-        else:
-            # 文件点击即推流
-            buttons.append([InlineKeyboardButton(f"▶️ {name}", callback_data=f"play|{full_path}")])
-
-    # 翻页按钮
-    nav_row = []
-    if page > 1:
-        nav_row.append(InlineKeyboardButton("⬅️ 上一页", callback_data=f"nav|{path}|{page-1}"))
-    if page * 10 < total:
-        nav_row.append(InlineKeyboardButton("下一页 ➡️", callback_data=f"nav|{path}|{page+1}"))
-    if nav_row:
-        buttons.append(nav_row)
-
+        name, fp = item['name'], f"{path.rstrip('/')}/{item['name']}"
+        icon = "📁" if item['is_dir'] else "▶️"
+        buttons.append([InlineKeyboardButton(f"{icon} {name}", callback_data=f"{'nav' if item['is_dir'] else 'play'}|{fp}|1")])
+    nav = []
+    if page > 1: nav.append(InlineKeyboardButton("⬅️ 上一页", callback_data=f"nav|{path}|{page-1}"))
+    if page * 10 < total: nav.append(InlineKeyboardButton("下一页 ➡️", callback_data=f"nav|{path}|{page+1}"))
+    if nav: buttons.append(nav)
     markup = InlineKeyboardMarkup(buttons)
-    text_content = f"📂 路径: \`{path}\`"
-    
-    if isinstance(obj, Update):
-        await obj.message.reply_text(text_content, reply_markup=markup, parse_mode='Markdown')
-    else:
-        await obj.callback_query.edit_message_text(text_content, reply_markup=markup, parse_mode='Markdown')
+    text = f"📂 路径: \`{path}\`"
+    if isinstance(obj, Update): await obj.message.reply_text(text, reply_markup=markup, parse_mode='Markdown')
+    else: await obj.callback_query.edit_message_text(text, reply_markup=markup, parse_mode='Markdown')
 
 async def callback_handler(update: Update, context):
-    """处理按钮点击"""
     query = update.callback_query
     await query.answer()
-    
-    parts = query.data.split("|", 2)
-    action = parts[0]
-    path = parts[1]
-    
-    if action == "nav":
-        page = int(parts[2])
-        await show_file_list(update, path, page)
-        
+    action, path, p_idx = query.data.split("|")
+    if action == "nav": await show_file_list(update, path, int(p_idx))
     elif action == "play":
-        # 获取文件直链
         res = alist_api("/api/fs/get", {"path": path})
-        raw_url = res.get('data', {}).get('raw_url')
-        
-        if raw_url:
-            await query.message.reply_text(f"🚀 正在获取直链并启动推流...\\n📄 文件: {os.path.basename(path)}")
-            success, info = trigger_github_workflow(raw_url, path)
-            if success:
-                await query.message.reply_text(f"✅ 成功! {info}\\nGitHub Action 已触发。")
-            else:
-                await query.message.reply_text(f"❌ 失败: {info}")
-        else:
-            await query.message.reply_text("❌ 无法获取文件直链 (raw_url)")
+        raw = res.get('data', {}).get('raw_url')
+        if raw:
+            success, info = trigger_github_workflow(raw, path)
+            await query.message.reply_text(f"{'✅' if success else '❌'} {info}\\n{os.path.basename(path)}")
+        else: await query.message.reply_text("❌ 获取直链失败")
 
 async def stop_all_workflows(update):
-    """停止所有正在运行的 GitHub Action"""
-    msg = await update.message.reply_text("🔍 正在扫描运行中的任务...")
-    
-    headers = {
-        "Authorization": f"Bearer {GITHUB_PAT}",
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28"
-    }
-    
-    # 获取运行中的工作流
-    list_url = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/actions/runs?status=in_progress"
-    runs = requests.get(list_url, headers=headers).json()
-    
-    count = 0
-    if 'workflow_runs' in runs:
-        for run in runs['workflow_runs']:
+    msg = await update.message.reply_text("🔍 正在停止任务...")
+    headers = {"Authorization": f"Bearer {GITHUB_PAT}", "Accept": "application/vnd.github+json"}
+    try:
+        runs = requests.get(f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/actions/runs?status=in_progress", headers=headers, timeout=10).json()
+        count = 0
+        for run in runs.get('workflow_runs', []):
             if run['name'] == 'Alist Stream to Telegram':
-                cancel_url = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/actions/runs/{run['id']}/cancel"
-                requests.post(cancel_url, headers=headers)
+                requests.post(f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/actions/runs/{run['id']}/cancel", headers=headers, timeout=10)
                 count += 1
-                
-    await msg.edit_text(f"🛑 已发送取消指令给 {count} 个任务。")
+        await msg.edit_text(f"🛑 已停止 {count} 个工作流")
+    except Exception as e:
+        await msg.edit_text(f"❌ 失败: {str(e)}")
 
 if __name__ == "__main__":
     if not BOT_TOKEN:
-        print("❌ 错误: 未找到 TG_BOT_TOKEN 环境变量")
+        print("❌ 未设置 TG_BOT_TOKEN")
         exit(1)
-        
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, menu_handler))
     app.add_handler(CallbackQueryHandler(callback_handler))
-    
-    print("✅ Bot 已启动...")
+    print("🚀 Bot Started")
     app.run_polling()
 `;
 
@@ -327,44 +285,17 @@ jobs:
           IMAGE_URL="\${{ github.event.inputs.image_url }}"
           RTMP_URL="\${{ github.event.inputs.rtmp_url }}"
           
-          # High Quality Audio Settings: AAC 320k 48kHz
-          # High Quality Video Settings: ${config.videoBitrate} bitrate, Medium Preset, 1080p
-          
           if [ -n "$IMAGE_URL" ]; then
-            echo "🎵 Audio + Image Mode Detected"
-            echo "Audio: $FILE_URL"
-            echo "Image: $IMAGE_URL"
-            
-            # -loop 1: Loop the image
-            # -framerate 30: Create 30fps video
-            # -shortest: End stream when audio ends
-            # -tune stillimage: Optimize encoding for static image
-            
-            ffmpeg -re \
-              -loop 1 -framerate 30 -i "$IMAGE_URL" \
-              -i "$FILE_URL" \
-              -c:v libx264 -preset medium -tune stillimage -b:v 4000k -maxrate 4000k -bufsize 8000k \
-              -vf "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,format=yuv420p" \
-              -c:a aac -b:a 320k -ar 48000 -ac 2 \
-              -shortest \
-              -f flv "$RTMP_URL"
-              
+            ffmpeg -re -loop 1 -framerate 30 -i "$IMAGE_URL" -i "$FILE_URL" \\
+              -c:v libx264 -preset medium -tune stillimage -b:v 4000k -maxrate 4000k -bufsize 8000k \\
+              -vf "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,format=yuv420p" \\
+              -c:a aac -b:a 320k -ar 48000 -ac 2 \\
+              -shortest -f flv "$RTMP_URL"
           else
-            echo "🎬 Video Mode Detected"
-            echo "Video: $FILE_URL"
-            
-            # -reconnect flags: Robustness against network drops
-            # -preset medium: Better quality than veryfast
-            # -profile:v high: High profile for better quality
-            
-            ffmpeg -re \
-              -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 5 \
-              -i "$FILE_URL" \
-              -c:v libx264 -preset medium -profile:v high -level 4.1 \
-              -b:v ${config.videoBitrate} -maxrate ${config.videoBitrate} -bufsize 12000k \
-              -vf "scale=1920:-2:flags=lanczos" \
-              -pix_fmt yuv420p -g 60 \
-              -c:a aac -b:a 320k -ar 48000 -ac 2 \
+            ffmpeg -re -i "$FILE_URL" \\
+              -c:v libx264 -preset medium -b:v ${config.videoBitrate} -maxrate ${config.videoBitrate} -bufsize 12000k \\
+              -vf "scale=1920:-2:flags=lanczos" -pix_fmt yuv420p -g 60 \\
+              -c:a aac -b:a 320k -ar 48000 -ac 2 \\
               -f flv "$RTMP_URL"
           fi
 `;

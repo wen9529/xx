@@ -1,14 +1,16 @@
 import os
 import logging
 import requests
-import mimetypes
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 
 # 1. 加载配置
-home_dir = os.path.expanduser("~")
-load_dotenv(os.path.join(home_dir, ".env"))
+# 尝试加载当前目录下的 .env，如果不存在则尝试用户主目录
+load_dotenv(".env")
+home_env = os.path.expanduser("~/.env")
+if os.path.exists(home_env):
+    load_dotenv(home_env)
 
 # 2. 获取环境变量
 BOT_TOKEN = os.getenv("TG_BOT_TOKEN")
@@ -28,14 +30,11 @@ logger = logging.getLogger(__name__)
 
 alist_token = None
 
-# --- 核心函数 ---
-
 def get_alist_token():
-    """获取 Alist Token"""
     global alist_token
     try:
         url = f"{ALIST_HOST}/api/auth/login"
-        res = requests.post(url, json={"username": ALIST_USER, "password": ALIST_PASSWORD})
+        res = requests.post(url, json={"username": ALIST_USER, "password": ALIST_PASSWORD}, timeout=10)
         if res.status_code == 200:
             data = res.json()
             if data.get('code') == 200:
@@ -46,34 +45,28 @@ def get_alist_token():
     return None
 
 def alist_api(endpoint, data=None):
-    """通用 Alist API 请求"""
     token = alist_token or get_alist_token()
     headers = {"Authorization": token, "Content-Type": "application/json"}
     try:
-        res = requests.post(f"{ALIST_HOST}{endpoint}", json=data, headers=headers)
-        # 如果 Token 失效 (401)，重新获取并重试
+        res = requests.post(f"{ALIST_HOST}{endpoint}", json=data, headers=headers, timeout=10)
         if res.json().get('code') == 401:
             headers["Authorization"] = get_alist_token()
-            res = requests.post(f"{ALIST_HOST}{endpoint}", json=data, headers=headers)
+            res = requests.post(f"{ALIST_HOST}{endpoint}", json=data, headers=headers, timeout=10)
         return res.json()
     except Exception as e:
         logger.error(f"API Error: {e}")
         return {}
 
 def trigger_github_workflow(file_url, file_name):
-    """触发 GitHub Action 推流"""
-    inputs = {
-        "file_url": file_url,
-        "rtmp_url": RTMP_URL
-    }
+    if not all([GITHUB_OWNER, GITHUB_REPO, GITHUB_PAT]):
+        return False, "GitHub 配置缺失"
     
-    # 简单的文件类型判断
+    inputs = {"file_url": file_url, "rtmp_url": RTMP_URL}
     ext = file_name.split('.')[-1].lower()
+    mode = "🎬 视频模式"
     if ext in ['mp3', 'flac', 'wav', 'm4a', 'aac', 'ogg']:
-        inputs["image_url"] = DEFAULT_COVER # 音频模式需要封面
+        inputs["image_url"] = DEFAULT_COVER
         mode = "🎵 音频模式"
-    else:
-        mode = "🎬 视频模式"
 
     url = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/actions/workflows/stream.yml/dispatches"
     headers = {
@@ -81,148 +74,110 @@ def trigger_github_workflow(file_url, file_name):
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28"
     }
-    
     try:
-        res = requests.post(url, json={"ref": "main", "inputs": inputs}, headers=headers)
+        res = requests.post(url, json={"ref": "main", "inputs": inputs}, headers=headers, timeout=15)
         return res.status_code == 204, mode
     except Exception as e:
         return False, str(e)
 
-# --- Bot 交互逻辑 ---
-
 async def start(update: Update, context):
-    """/start 命令"""
     if str(update.effective_user.id) != str(ADMIN_ID): return
-    
     keyboard = [["📂 浏览云盘", "🛑 停止任务"]]
-    await update.message.reply_text(
-        "👋 *StreamForge 控制台*\n请选择操作：",
-        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True),
-        parse_mode='Markdown'
-    )
+    await update.message.reply_text("👋 *StreamForge 控制台*\n请选择操作：", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True), parse_mode='Markdown')
 
 async def menu_handler(update: Update, context):
-    """处理菜单按钮"""
     if str(update.effective_user.id) != str(ADMIN_ID): return
     msg = update.message.text.strip()
-    
-    if msg == "📂 浏览云盘":
+    if msg == "📂 浏览云盘": 
         await show_file_list(update, "/", 1)
-    elif msg == "🛑 停止任务":
+    elif msg == "🛑 停止任务": 
         await stop_all_workflows(update)
-    else:
-        # 允许直接发送直链
-        if msg.startswith("http"):
-            await update.message.reply_text("🔗 检测到链接，尝试推流...")
-            success, info = trigger_github_workflow(msg, "DirectLink.mp4")
-            if success:
-                await update.message.reply_text(f"✅ 推流请求已发送 ({info})")
-            else:
-                await update.message.reply_text(f"❌ 请求失败: {info}")
+    elif msg.startswith("http"):
+        await update.message.reply_text("🔗 检测到外链，尝试推流...")
+        success, info = trigger_github_workflow(msg, "DirectLink.mp4")
+        await update.message.reply_text(f"{'✅' if success else '❌'} {info}")
 
 async def show_file_list(obj, path, page):
-    """显示 Alist 文件列表 (支持翻页)"""
     data = alist_api("/api/fs/list", {"path": path, "page": page, "per_page": 10})
     content = data.get('data', {}).get('content', [])
     total = data.get('data', {}).get('total', 0)
     
-    # 排序：文件夹在前
+    if not content and path == "/":
+        if isinstance(obj, Update):
+            await obj.message.reply_text("❌ Alist 列表为空，请检查挂载或配置。")
+        else:
+            await obj.callback_query.message.reply_text("❌ Alist 列表为空。")
+        return
+
     content.sort(key=lambda x: x['is_dir'], reverse=True)
-    
     buttons = []
-    # 返回上级按钮
     if path != "/":
-        parent_dir = os.path.dirname(path.rstrip('/')) or "/"
-        buttons.append([InlineKeyboardButton("🔙 返回上级", callback_data=f"nav|{parent_dir}|1")])
+        parent = os.path.dirname(path.rstrip('/')) or "/"
+        buttons.append([InlineKeyboardButton("🔙 返回上级", callback_data=f"nav|{parent}|1")])
     
     for item in content:
         name = item['name']
-        full_path = f"{path.rstrip('/')}/{name}"
-        
-        if item['is_dir']:
-            buttons.append([InlineKeyboardButton(f"📁 {name}", callback_data=f"nav|{full_path}|1")])
-        else:
-            # 文件点击即推流
-            buttons.append([InlineKeyboardButton(f"▶️ {name}", callback_data=f"play|{full_path}")])
-
-    # 翻页按钮
-    nav_row = []
-    if page > 1:
-        nav_row.append(InlineKeyboardButton("⬅️ 上一页", callback_data=f"nav|{path}|{page-1}"))
-    if page * 10 < total:
-        nav_row.append(InlineKeyboardButton("下一页 ➡️", callback_data=f"nav|{path}|{page+1}"))
-    if nav_row:
-        buttons.append(nav_row)
-
-    markup = InlineKeyboardMarkup(buttons)
-    text_content = f"📂 路径: `{path}`"
+        fp = f"{path.rstrip('/')}/{name}"
+        icon = "📁" if item['is_dir'] else "▶️"
+        buttons.append([InlineKeyboardButton(f"{icon} {name}", callback_data=f"{'nav' if item['is_dir'] else 'play'}|{fp}|1")])
     
+    nav = []
+    if page > 1: nav.append(InlineKeyboardButton("⬅️ 上一页", callback_data=f"nav|{path}|{page-1}"))
+    if page * 10 < total: nav.append(InlineKeyboardButton("下一页 ➡️", callback_data=f"nav|{path}|{page+1}"))
+    if nav: buttons.append(nav)
+    
+    markup = InlineKeyboardMarkup(buttons)
+    text = f"📂 路径: `{path}`"
     if isinstance(obj, Update):
-        await obj.message.reply_text(text_content, reply_markup=markup, parse_mode='Markdown')
+        await obj.message.reply_text(text, reply_markup=markup, parse_mode='Markdown')
     else:
-        await obj.callback_query.edit_message_text(text_content, reply_markup=markup, parse_mode='Markdown')
+        await obj.callback_query.edit_message_text(text, reply_markup=markup, parse_mode='Markdown')
 
 async def callback_handler(update: Update, context):
-    """处理按钮点击"""
     query = update.callback_query
     await query.answer()
     
-    parts = query.data.split("|", 2)
-    action = parts[0]
-    path = parts[1]
-    
+    try:
+        action, path, p_idx = query.data.split("|")
+    except ValueError:
+        return
+
     if action == "nav":
-        page = int(parts[2])
-        await show_file_list(update, path, page)
-        
+        await show_file_list(update, path, int(p_idx))
     elif action == "play":
-        # 获取文件直链
         res = alist_api("/api/fs/get", {"path": path})
-        raw_url = res.get('data', {}).get('raw_url')
-        
-        if raw_url:
-            await query.message.reply_text(f"🚀 正在获取直链并启动推流...\n📄 文件: {os.path.basename(path)}")
-            success, info = trigger_github_workflow(raw_url, path)
-            if success:
-                await query.message.reply_text(f"✅ 成功! {info}\nGitHub Action 已触发。")
-            else:
-                await query.message.reply_text(f"❌ 失败: {info}")
+        raw = res.get('data', {}).get('raw_url')
+        if raw:
+            await query.message.reply_text(f"🚀 启动推流: {os.path.basename(path)}")
+            success, info = trigger_github_workflow(raw, path)
+            await query.message.reply_text(f"{'✅' if success else '❌'} {info}")
         else:
-            await query.message.reply_text("❌ 无法获取文件直链 (raw_url)")
+            await query.message.reply_text("❌ 无法获取直链，请检查 Alist 权限")
 
 async def stop_all_workflows(update):
-    """停止所有正在运行的 GitHub Action"""
-    msg = await update.message.reply_text("🔍 正在扫描运行中的任务...")
-    
-    headers = {
-        "Authorization": f"Bearer {GITHUB_PAT}",
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28"
-    }
-    
-    # 获取运行中的工作流
-    list_url = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/actions/runs?status=in_progress"
-    runs = requests.get(list_url, headers=headers).json()
-    
-    count = 0
-    if 'workflow_runs' in runs:
-        for run in runs['workflow_runs']:
+    msg = await update.message.reply_text("🔍 正在请求停止 GitHub 任务...")
+    headers = {"Authorization": f"Bearer {GITHUB_PAT}", "Accept": "application/vnd.github+json"}
+    try:
+        runs = requests.get(f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/actions/runs?status=in_progress", headers=headers, timeout=10).json()
+        count = 0
+        for run in runs.get('workflow_runs', []):
             if run['name'] == 'Alist Stream to Telegram':
-                cancel_url = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/actions/runs/{run['id']}/cancel"
-                requests.post(cancel_url, headers=headers)
+                requests.post(f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/actions/runs/{run['id']}/cancel", headers=headers, timeout=10)
                 count += 1
-                
-    await msg.edit_text(f"🛑 已发送取消指令给 {count} 个任务。")
+        await msg.edit_text(f"🛑 已成功向 {count} 个工作流发送停止指令。")
+    except Exception as e:
+        await msg.edit_text(f"❌ 停止失败: {str(e)}")
 
 if __name__ == "__main__":
     if not BOT_TOKEN:
         print("❌ 错误: 未找到 TG_BOT_TOKEN 环境变量")
         exit(1)
-        
+    
+    print("🚀 正在初始化 Bot...")
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, menu_handler))
     app.add_handler(CallbackQueryHandler(callback_handler))
     
-    print("✅ Bot 已启动...")
+    print("✅ Bot 已上线，按 Ctrl+C 停止")
     app.run_polling()

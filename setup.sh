@@ -1,38 +1,70 @@
 #!/bin/bash
 
-echo "🚀 开始 StreamForge 环境部署..."
+echo "🚀 开始 StreamForge 环境智能部署..."
 
-# 1. 更新 Termux 源并安装基础包
-echo "📦 正在更新软件源并安装依赖 (Python, Alist, FFmpeg, Node.js)..."
+# 函数：检查并安装软件包
+check_install() {
+    if ! command -v $1 &> /dev/null; then
+        echo "📦 正在安装 $2..."
+        pkg install -y $2
+    else
+        echo "✅ $1 已安装，跳过。"
+    fi
+}
+
+# 1. 更新软件源
+echo "🔄 正在同步软件源..."
 pkg update -y
-pkg install -y python alist ffmpeg git nodejs
 
-# 2. 安装 PM2 (用于后台进程管理)
-echo "📦 正在安装 PM2..."
-npm install -g pm2
+# 2. 检查基础软件包
+check_install python python
+check_install alist alist
+check_install ffmpeg ffmpeg
+check_install git git
+check_install node nodejs
 
-# 3. 安装 Python 依赖库
-echo "📦 正在安装 Python 库 (Telegram Bot, Requests)..."
-pip install python-telegram-bot requests python-dotenv
-
-# 4. 启动 Alist (如果尚未运行)
-echo "⚙️ 启动 Alist 服务..."
-# 使用 PM2 管理 Alist，避免后台被杀
-pm2 start alist --name alist -- server
-
-# 5. 启动 Telegram Bot
-echo "🤖 启动 Bot..."
-# 确保 bot.py 存在
-if [ -f "bot.py" ]; then
-    pm2 start bot.py --name stream-bot --interpreter python
-    echo "✅ Bot 已通过 PM2 启动"
+# 3. 检查 PM2 (Node.js 模块)
+if ! command -v pm2 &> /dev/null; then
+    echo "📦 正在安装 PM2 进程管理器..."
+    npm install -g pm2
 else
-    echo "⚠️ 未找到 bot.py，请确保文件已保存，然后手动运行: pm2 start bot.py --interpreter python"
+    echo "✅ PM2 已安装，跳过。"
 fi
 
-# 6. 保存 PM2 状态 (开机自启)
+# 4. 检查并更新 Python 依赖
+echo "📦 检查 Python 依赖库 (telegram, requests, dotenv)..."
+pip install python-telegram-bot requests python-dotenv --upgrade
+
+# 5. 配置并启动服务 (使用 PM2)
+echo "⚙️ 配置服务自动化..."
+
+# 停止并删除旧的 PM2 任务以免重复
+pm2 delete alist stream-bot 2>/dev/null
+
+# 启动 Alist
+echo "▶️ 启动 Alist 服务..."
+pm2 start alist --name alist -- server
+
+# 启动 Bot
+if [ -f "bot.py" ]; then
+    echo "▶️ 启动 Telegram Bot..."
+    pm2 start bot.py --name stream-bot --interpreter python
+else
+    echo "❌ 错误: 未在当前目录找到 bot.py 文件！"
+    echo "请先确保 bot.py 内容已正确保存到本地。"
+fi
+
+# 6. 保存 PM2 状态以实现持久化
 pm2 save
 
-echo "🎉 部署完成！"
-echo "👉 Alist 地址: http://127.0.0.1:5244 (默认密码请查看 Alist 文档或终端输出)"
-echo "👉 Bot 状态: 使用 'pm2 status' 查看"
+echo ""
+echo "🎉 部署脚本执行完毕！"
+echo "--------------------------------"
+echo "📊 当前运行状态:"
+pm2 status
+echo "--------------------------------"
+echo "💡 提示:"
+echo "- 查看日志: pm2 logs stream-bot"
+echo "- 重启 Bot: pm2 restart stream-bot"
+echo "- Alist 地址: http://127.0.0.1:5244"
+echo "--------------------------------"
