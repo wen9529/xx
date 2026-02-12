@@ -24,10 +24,22 @@ else
     echo "✅ Cloudflared 已存在"
 fi
 
-# 4. 检查是否需要配置 .env
-if [ ! -f ".env" ]; then
-    echo "📝 检测到未配置环境，正在创建 .env 文件..."
-    
+# 4. 配置 .env
+echo "📝 配置环境变量..."
+CONFIG_NEEDED=true
+
+if [ -f ".env" ]; then
+    echo "⚠️ 检测到现有的 .env 配置文件。"
+    read -p "❓ 是否重新输入配置信息 (Bot Token 等)? (y/n, 默认 n): " RECONFIG
+    if [[ "$RECONFIG" != "y" ]]; then
+        CONFIG_NEEDED=false
+        echo "✅ 跳过配置，使用现有 .env 文件。"
+    else
+        echo "🔄 开始重新配置..."
+    fi
+fi
+
+if [ "$CONFIG_NEEDED" = true ]; then
     read -p "请输入 Telegram Bot Token: " TG_BOT_TOKEN
     read -p "请输入你的 Telegram ID (Admin ID): " TG_ADMIN_ID
     read -p "请输入 GitHub 用户名 (Owner): " GITHUB_OWNER
@@ -49,9 +61,7 @@ ALIST_PUBLIC_URL=$ALIST_PUBLIC_URL
 ALIST_USER=admin
 ALIST_PASSWORD=admin
 EOF
-    echo "✅ .env 文件已创建！Alist 默认密码为 admin，请在 Alist 中修改后同步更新 .env 文件。"
-else
-    echo "✅ .env 文件已存在，跳过配置。"
+    echo "✅ .env 文件已更新！"
 fi
 
 echo "🎉 安装完成！"
