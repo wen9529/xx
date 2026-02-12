@@ -5,8 +5,9 @@
 echo "🚀 开始安装/修复依赖环境..."
 
 # 1. 基础工具安装
+echo "📦 安装系统软件包..."
 pkg update -y 
-pkg install -y python ffmpeg git nodejs wget aria2
+pkg install -y python ffmpeg git nodejs wget aria2 alist vim procps
 
 # 2. Python 依赖
 echo "🐍 安装/更新 Python 库..."
@@ -18,14 +19,28 @@ if ! command -v pm2 &> /dev/null; then
     npm install pm2 -g
 fi
 
-# 4. Cloudflared
+# 4. Cloudflared 环境检查
 echo "☁️ 检查 Cloudflared..."
+# 杀掉残留进程防止占用
+pkill -f cloudflared || true
+
 if [ ! -f "cloudflared" ]; then
-    echo "下载 cloudflared..."
-    wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-android-arm64 -O cloudflared
+    echo "⬇️ 下载 cloudflared (Android arm64)..."
+    curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-android-arm64 -o cloudflared
     chmod +x cloudflared
 else
     echo "✅ Cloudflared 已存在"
+    chmod +x cloudflared
+fi
+
+# 验证 cloudflared 是否可用
+if ./cloudflared --version > /dev/null 2>&1; then
+    echo "✅ Cloudflared 二进制文件验证通过"
+else
+    echo "❌ Cloudflared 文件可能损坏，正在重试下载..."
+    rm cloudflared
+    curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-android-arm64 -o cloudflared
+    chmod +x cloudflared
 fi
 
 # 5. 配置 Aria2
@@ -36,21 +51,12 @@ fi
 
 if [ ! -f "aria2.conf" ]; then
     cat <<EOF > aria2.conf
-# 开启 RPC
 enable-rpc=true
-# 允许所有来源
 rpc-allow-origin-all=true
-# 允许非外部访问
 rpc-listen-all=false
-# RPC 端口
 rpc-listen-port=6800
-# RPC 密钥 (留空则无密码，方便 Termux 本地使用)
-# rpc-secret=你的密码
-# 文件保存路径 (默认当前目录下的 downloads)
 dir=${HOME}/downloads
-# 断点续传
 continue=true
-# 进度保存
 input-file=$(pwd)/aria2.session
 save-session=$(pwd)/aria2.session
 save-session-interval=60
@@ -60,21 +66,20 @@ fi
 
 # 6. 配置 .env
 echo "📝 检查环境变量..."
-CONFIG_PATH=""
 
+CONFIG_PATH=".env"
 if [ -f "../.env" ]; then
-    echo "✅ 在上级目录找到 .env，将使用该配置。"
     CONFIG_PATH="../.env"
+    echo "✅ 检测到上级目录 .env"
 elif [ -f ".env" ]; then
-    echo "✅ 在当前目录找到 .env。"
-    CONFIG_PATH=".env"
+    echo "✅ 检测到当前目录 .env"
 else
-    echo "⚠️ 未找到配置文件，开始创建..."
+    echo "⚠️ 未找到配置文件，开始向导..."
     read -p "请输入 Telegram Bot Token: " TG_BOT_TOKEN
     read -p "请输入 Admin ID: " TG_ADMIN_ID
-    read -p "GitHub Owner: " GITHUB_OWNER
-    read -p "GitHub Repo: " GITHUB_REPO
-    read -p "GitHub PAT: " GITHUB_PAT
+    read -p "GitHub Owner (用户名): " GITHUB_OWNER
+    read -p "GitHub Repo (仓库名): " GITHUB_REPO
+    read -p "GitHub PAT (ghp_开头的Token): " GITHUB_PAT
     
     cat <<EOF > .env
 TG_BOT_TOKEN=$TG_BOT_TOKEN
@@ -90,10 +95,29 @@ EOF
     echo "✅ .env 创建完成"
 fi
 
-# 7. 生成 PM2 Ecosystem 配置 (使用 JSON 格式以兼容所有环境)
-echo "🤖 生成进程管理配置 (ecosystem.config.json)..."
+# 加载环境变量以同步 Alist 密码
+if [ -f "$CONFIG_PATH" ]; then
+    export $(grep -v '^#' "$CONFIG_PATH" | xargs)
+fi
 
-# 清理旧的配置文件，避免冲突
+# 7. 初始化 Alist 密码 (防止 Alist 无法登录)
+echo "🔐 同步 Alist 管理员密码..."
+# 设置数据目录，确保与 ecosystem.config.json 一致
+export ALIST_DATA_DIR="./alist_data"
+mkdir -p "$ALIST_DATA_DIR"
+
+if command -v alist &> /dev/null; then
+    # 尝试设置密码，静默输出
+    # 注意：如果 user 不是 admin，这个命令可能只改 admin 的密码
+    # 这里假设使用的是 admin 账户
+    alist admin set "${ALIST_PASSWORD:-admin}" >/dev/null 2>&1
+    echo "✅ Alist 'admin' 密码已重置为配置文件中的值"
+else
+    echo "⚠️ 未找到 alist 命令，跳过密码同步。请确认 alist 已安装。"
+fi
+
+# 8. 生成 PM2 Ecosystem 配置
+echo "🤖 生成 PM2 配置..."
 rm -f ecosystem.config.js ecosystem.config.cjs
 
 cat <<EOF > ecosystem.config.json
@@ -104,7 +128,10 @@ cat <<EOF > ecosystem.config.json
       "script": "alist",
       "args": "server",
       "interpreter": "none",
-      "autorestart": true
+      "autorestart": true,
+      "env": {
+        "ALIST_DATA_DIR": "./alist_data"
+      }
     },
     {
       "name": "aria2",
@@ -135,15 +162,22 @@ cat <<EOF > ecosystem.config.json
 }
 EOF
 
-echo "🎉 安装修复完成！"
+# 9. 设置 Termux 开机自启 (通过 .bashrc)
+echo "🔄 配置 Termux 自动启动..."
+if ! grep -q "pm2 resurrect" ~/.bashrc 2>/dev/null; then
+    echo "pm2 resurrect >/dev/null 2>&1" >> ~/.bashrc
+    echo "✅ 已添加 pm2 resurrect 到 .bashrc"
+else
+    echo "✅ 自启动配置已存在"
+fi
+
+echo "🎉 修复完成！正在重启所有服务..."
 echo "------------------------------------------------"
-echo "请执行以下命令重启所有服务以加载自动更新模块："
-echo "pm2 delete all                     # 1. 清理旧进程"
-echo "pm2 start ecosystem.config.json    # 2. 启动新配置 (包含 watcher)"
-echo "pm2 save                           # 3. 保存开机自启"
-echo "pm2 logs watcher                   # 4. 查看自动更新日志"
+pm2 delete all >/dev/null 2>&1
+pm2 start ecosystem.config.json
+pm2 save
 echo "------------------------------------------------"
-echo "⚠️  重要提示：请确保在 Alist 后台 -> 设置 -> 其他 -> Aria2 中配置："
-echo "   Aria2 地址: http://127.0.0.1:6800/jsonrpc"
-echo "   Aria2 密钥: (留空)"
+echo "✅ 所有服务已启动！"
+echo "ℹ️  如果 Alist 仍然无法访问，请尝试等待 10-20 秒让其初始化。"
+echo "ℹ️  Termux 下次打开时，Bot 将自动后台启动。"
 echo "------------------------------------------------"
