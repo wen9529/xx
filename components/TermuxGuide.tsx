@@ -1,13 +1,13 @@
 
 import React, { useState } from 'react';
 import { CodeBlock } from './CodeBlock';
-import { TERMUX_SETUP_SCRIPT, PYTHON_BOT_SCRIPT, GITHUB_WORKFLOW_TEMPLATE, DEFAULT_STREAM_CONFIG, GENERATE_ENV_CONTENT } from '../constants';
+import { TERMUX_SETUP_SCRIPT, PYTHON_BOT_SCRIPT, GITHUB_WORKFLOW_TEMPLATE, DEFAULT_STREAM_CONFIG, GENERATE_ENV_CONTENT, TERMUX_UPDATE_SCRIPT } from '../constants';
 import { StreamConfig } from '../types';
-import { Terminal, Bot, Github, Save, Shield, Download, Image as ImageIcon, Video, FileText } from 'lucide-react';
+import { Terminal, Bot, Github, Save, Shield, Download, Image as ImageIcon, Video, FileText, RefreshCw } from 'lucide-react';
 
 export const TermuxGuide: React.FC = () => {
   const [config, setConfig] = useState<StreamConfig>(DEFAULT_STREAM_CONFIG);
-  const [activeTab, setActiveTab] = useState<'setup' | 'bot' | 'workflow' | 'env'>('setup');
+  const [activeTab, setActiveTab] = useState<'setup' | 'bot' | 'workflow' | 'env' | 'update'>('setup');
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const { name, value } = e.target;
@@ -18,6 +18,7 @@ export const TermuxGuide: React.FC = () => {
   const botCode = PYTHON_BOT_SCRIPT;
   const workflowCode = GITHUB_WORKFLOW_TEMPLATE(config);
   const envCode = GENERATE_ENV_CONTENT(config);
+  const updateCode = TERMUX_UPDATE_SCRIPT;
 
   return (
     <div className="max-w-7xl mx-auto p-6 flex flex-col lg:flex-row gap-6">
@@ -64,9 +65,12 @@ export const TermuxGuide: React.FC = () => {
 
       {/* Output Panel */}
       <div className="w-full lg:w-2/3 flex flex-col bg-gray-800 rounded-xl border border-gray-700 overflow-hidden min-h-[600px]">
-        <div className="flex border-b border-gray-700 bg-gray-900/50">
+        <div className="flex border-b border-gray-700 bg-gray-900/50 overflow-x-auto">
           <button onClick={() => setActiveTab('setup')} className={`tab-btn ${activeTab === 'setup' ? 'active' : ''}`}>
             <Terminal size={16} /> setup.sh
+          </button>
+          <button onClick={() => setActiveTab('update')} className={`tab-btn ${activeTab === 'update' ? 'active' : ''}`}>
+            <RefreshCw size={16} /> update.sh
           </button>
           <button onClick={() => setActiveTab('bot')} className={`tab-btn ${activeTab === 'bot' ? 'active' : ''}`}>
             <Bot size={16} /> bot.py
@@ -88,6 +92,16 @@ export const TermuxGuide: React.FC = () => {
                 <CodeBlock code={setupCode} language="bash" filename="setup.sh" title="One-Click Installer" />
              </div>
           )}
+          {activeTab === 'update' && (
+             <div className="p-6">
+                <div className="mb-4 text-sm text-gray-400">
+                   <b>Force Update:</b> Run this inside your project folder to pull the latest code and restart services.
+                   <br/>
+                   <span className="text-xs text-yellow-500">Note: This overwrites local code changes but keeps your $HOME/.env file safe.</span>
+                </div>
+                <CodeBlock code={updateCode} language="bash" filename="update.sh" title="Force Update & Restart" />
+             </div>
+          )}
           {activeTab === 'bot' && (
              <div className="p-6">
                 <div className="mb-4 text-sm text-gray-400">
@@ -99,7 +113,7 @@ export const TermuxGuide: React.FC = () => {
           {activeTab === 'env' && (
              <div className="p-6">
                 <div className="mb-4 text-sm text-gray-400">
-                   <b>Variables File:</b> This file is automatically created by <code>setup.sh</code>, but you can copy this manually if needed.
+                   <b>Variables File:</b> This file is automatically created by <code>setup.sh</code> in your <code>$HOME</code> directory.
                 </div>
                 <CodeBlock code={envCode} language="bash" filename=".env" />
              </div>
@@ -130,7 +144,7 @@ export const TermuxGuide: React.FC = () => {
           outline: none;
         }
         .tab-btn {
-          flex: 1;
+          min-width: 100px;
           padding: 16px;
           font-size: 14px;
           font-weight: 500;
@@ -140,6 +154,7 @@ export const TermuxGuide: React.FC = () => {
           gap: 8px;
           color: #9ca3af;
           transition: all 0.2s;
+          white-space: nowrap;
         }
         .tab-btn:hover { color: white; background: rgba(255,255,255,0.05); }
         .tab-btn.active {

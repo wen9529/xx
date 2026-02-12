@@ -269,6 +269,35 @@ echo "🎉 Done! Alist Aria2 Secret: $ARIA_RPC"
 echo "ℹ️  Bot Token & Config saved to: \$ENV_FILE"
 `;
 
+export const TERMUX_UPDATE_SCRIPT = `#!/bin/bash
+# StreamForge Force Update Script
+# Run this inside your project folder
+
+echo "🔄 Initiating Force Update..."
+
+# 1. Stop Services to prevent locks
+echo "🛑 Stopping services..."
+pm2 stop all
+
+# 2. Force Pull from Git
+# This resets the local directory to match the remote 'main' branch exactly.
+# It deletes local changes to tracked files, but keeps untracked files (unless -x is used).
+# Your .env is safe because it is in $HOME/.env
+echo "📥 Fetching and overwriting..."
+git fetch --all
+git reset --hard origin/main
+
+# 3. Update Dependencies (Optional but recommended)
+echo "📦 Updating Python dependencies..."
+pip install python-telegram-bot requests python-dotenv
+
+# 4. Restart Services
+echo "♻️ Restarting services..."
+pm2 restart all
+
+echo "✅ Update Complete! Bot and Alist are running with latest code."
+`;
+
 export const GITHUB_WORKFLOW_TEMPLATE = (config: StreamConfig) => `name: Alist Stream to Telegram
 
 on:
