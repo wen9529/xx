@@ -23,10 +23,3 @@ export interface StreamConfig {
   defaultCoverUrl: string; // Custom cover for audio files
   videoBitrate: string;    // e.g., "6000k"
 }
-
-export interface Message {
-  id: string;
-  role: 'user' | 'model';
-  content: string;
-  timestamp: number;
-}
