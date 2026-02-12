@@ -11,14 +11,17 @@ logging.basicConfig(
 logger = logging.getLogger("StreamForge")
 
 # --- 加载环境变量 ---
+# 1. 尝试加载当前目录的 .env
 load_dotenv()
 
-# 如果当前目录没有 Token，尝试加载上级目录的 .env
+# 2. 如果当前目录没有 Token (或为空)，尝试加载上级目录的 .env
+# 注意：如果本地 .env 存在但变量为空，load_dotenv 可能会将其置为空字符串
 if not os.getenv("TG_BOT_TOKEN"):
     parent_env = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '.env')
     if os.path.exists(parent_env):
         logger.info(f"正在加载上级目录配置文件: {parent_env}")
-        load_dotenv(dotenv_path=parent_env)
+        # 关键: 使用 override=True 覆盖本地可能存在的空值，解决本地有空 .env 导致的问题
+        load_dotenv(dotenv_path=parent_env, override=True)
 
 # 配置常量
 BOT_TOKEN = os.getenv("TG_BOT_TOKEN")
@@ -36,5 +39,5 @@ KEYS_FILE = "stream_keys.json"
 CLOUDFLARED_BIN = "./cloudflared"
 
 if not BOT_TOKEN:
-    logger.error("❌ 未找到 TG_BOT_TOKEN，请检查 .env 文件")
+    logger.error("❌ 未找到 TG_BOT_TOKEN，请检查 .env 文件 (已检查当前及上级目录)")
     sys.exit(1)

@@ -5,7 +5,6 @@
 echo "🚀 开始安装依赖环境..."
 
 # 1. 更新包管理器并安装基础工具
-# 新增 aria2，因为 Alist 离线下载通常需要它
 pkg update -y && pkg upgrade -y
 pkg install -y python ffmpeg git nodejs wget aria2
 
@@ -36,6 +35,13 @@ if [ -f ".env" ]; then
         echo "✅ 跳过配置，使用现有 .env 文件。"
     else
         echo "🔄 开始重新配置..."
+    fi
+elif [ -f "../.env" ]; then
+    echo "⚠️ 检测到上级目录存在 .env 配置文件。"
+    read -p "❓ 是否直接使用上级目录配置? (y/n, 默认 y): " USE_PARENT
+    if [[ "$USE_PARENT" != "n" ]]; then
+        CONFIG_NEEDED=false
+        echo "✅ 跳过本地配置，Bot 将读取上级目录的 .env 文件。"
     fi
 fi
 
