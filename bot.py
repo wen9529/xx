@@ -198,10 +198,10 @@ async def start(update: Update, context):
     
     context.user_data.clear()
     
-    # 重新设计键盘布局，将离线下载单独一行，确保显示
+    # 重新设计键盘布局，增加 "(Magnet/HTTP)" 后缀，方便您确认是否更新成功
     keyboard = [
         ["📂 浏览云盘"],
-        ["🧲 离线下载"],
+        ["🧲 离线下载 (Magnet/HTTP)"],
         ["🌐 开启/关闭 远程访问", "🔐 查看登录信息"],
         ["🛑 停止推流", "🔑 密钥管理"]
     ]
@@ -262,7 +262,7 @@ async def menu_handler(update: Update, context):
         await update.message.reply_text("🔍 读取根目录...")
         await show_file_list(update, "/", 1)
         
-    elif msg == "🧲 离线下载":
+    elif msg == "🧲 离线下载 (Magnet/HTTP)":
         context.user_data['state'] = 'AWAITING_LINK'
         await update.message.reply_text("📥 **请发送磁力链接 (Magnet) 或 HTTP 链接**\n(或者直接粘贴链接给我，无需点此按钮)", parse_mode='Markdown')
 
@@ -435,5 +435,6 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, menu_handler))
     app.add_handler(CallbackQueryHandler(callback_handler))
     
-    print("🤖 Bot is running...")
+    print("🚀 Bot 已启动！请在 Telegram 中发送 /start 更新菜单。")
+    print("如果代码更新后菜单未变，请按 Ctrl+C 停止旧进程并重新运行 python bot.py")
     app.run_polling()
