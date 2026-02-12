@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Terminal, Bot, Github, FileText, Clipboard, Check } from 'lucide-react';
+import { Terminal, Bot, Github, FileText, Clipboard, Check, Cloud, Globe } from 'lucide-react';
 import { DEFAULT_STREAM_CONFIG, PYTHON_BOT_SCRIPT, GITHUB_WORKFLOW_TEMPLATE, GENERATE_ENV_CONTENT, GENERATE_SETUP_SCRIPT } from './constants';
 import { StreamConfig } from './types';
 
@@ -36,12 +36,8 @@ const App: React.FC = () => {
     setConfig(prev => ({ ...prev, [name]: value }));
   };
 
-  // Generate contents dynamically
   const envCode = GENERATE_ENV_CONTENT(config);
   const botCode = PYTHON_BOT_SCRIPT;
-  // NOTE: In the file system, setup.sh now contains the hardcoded bot.py for standalone usage. 
-  // For the UI preview, we generate it dynamically to reflect any potential config changes if needed, 
-  // or we can just display the raw script. 
   const setupCode = GENERATE_SETUP_SCRIPT(envCode, botCode);
   const workflowCode = GITHUB_WORKFLOW_TEMPLATE(config);
 
@@ -70,6 +66,13 @@ const App: React.FC = () => {
                 <input name="telegramBotToken" type="password" placeholder="Bot Token" value={config.telegramBotToken} onChange={handleChange} className="input-field mb-2" />
                 <input name="telegramAdminId" placeholder="Admin ID" value={config.telegramAdminId} onChange={handleChange} className="input-field mb-2" />
                 <input name="telegramRtmpUrl" placeholder="RTMP URL" value={config.telegramRtmpUrl} onChange={handleChange} className="input-field" />
+              </div>
+              <div className="pt-2 border-t border-gray-700">
+                <label className="text-xs text-gray-400 flex items-center gap-2 mb-2"><Cloud size={14}/> Cloudflare Tunnel</label>
+                <input name="cloudflaredToken" type="password" placeholder="Tunnel Token (ey...)" value={config.cloudflaredToken} onChange={handleChange} className="input-field mb-2" />
+                <label className="text-xs text-gray-400 flex items-center gap-2 mb-2"><Globe size={14}/> Public URL</label>
+                <input name="alistPublicUrl" placeholder="https://your-domain.com" value={config.alistPublicUrl} onChange={handleChange} className="input-field" />
+                <p className="text-[10px] text-gray-500 mt-1">Required if you use proxy files. Replace localhost with this domain.</p>
               </div>
             </div>
           </div>

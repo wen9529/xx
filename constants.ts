@@ -9,12 +9,66 @@ export const DEFAULT_STREAM_CONFIG: StreamConfig = {
   telegramRtmpUrl: "rtmp://x.rtmp.t.me/s/",
   telegramStreamKey: "",
   alistPassword: "admin",
+  alistPublicUrl: "https://alist.glkk.dpdns.org",
   aria2Secret: "streamforge",
+  cloudflaredToken: "eyJhIjoiMjEyOGViYjhlN2Y2OTU4MjZkNzVmNjkwZTBhZTE4MjEiLCJ0IjoiYTE3OTBhNmMtMWQyZi00MDUzLTlkOTktOGMyZWUyZmJlNTczIiwicyI6Ik1UTXpaamhsT1RVdE1tTTJaaTAwWmpnMUxXSXlaakF0WldWa1lUVXhaR0V3TlRnMCJ9",
   fileName: "movie.mp4",
   fileUrl: "",
   defaultCoverUrl: "https://images.unsplash.com/photo-1614850523459-c2f4c699c52e?q=80&w=1920&auto=format&fit=crop",
   videoBitrate: "6000k",
 };
+
+export const GITHUB_WORKFLOW_TEMPLATE = (config: StreamConfig) => `name: Alist Stream to Telegram
+
+on:
+  workflow_dispatch:
+    inputs:
+      file_url:
+        description: 'Direct URL of the file'
+        required: true
+      rtmp_url:
+        description: 'RTMP URL (including key)'
+        required: true
+      image_url:
+        description: 'Background image for audio'
+        required: false
+        default: '${config.defaultCoverUrl}'
+
+jobs:
+  stream:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install FFmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Stream Process
+        run: |
+          FILE_URL="\${{ inputs.file_url }}"
+          RTMP_URL="\${{ inputs.rtmp_url }}"
+          COVER_URL="\${{ inputs.image_url }}"
+          
+          echo "Preparing stream for: $FILE_URL"
+          
+          if [[ "$FILE_URL" =~ \\.(mp3|flac|wav|m4a|aac|ogg)$ ]]; then
+            echo "Audio detected. Using cover image."
+            ffmpeg -re -loop 1 -i "$COVER_URL" -i "$FILE_URL" \
+              -c:v libx264 -preset veryfast -tune stillimage \
+              -c:a aac -b:a 192k -pix_fmt yuv420p -shortest \
+              -f flv "$RTMP_URL"
+          else
+            echo "Video detected. Streaming directly."
+            ffmpeg -re -i "$FILE_URL" \
+              -c:v copy -c:a aac -strict experimental \
+              -f flv "$RTMP_URL"
+          fi
+`;
 
 export const GENERATE_ENV_CONTENT = (config: StreamConfig) => `TG_BOT_TOKEN=${config.telegramBotToken}
 TG_ADMIN_ID=${config.telegramAdminId}
@@ -24,8 +78,10 @@ GITHUB_PAT=${config.githubPat}
 RTMP_URL=${config.telegramRtmpUrl}${config.telegramStreamKey}
 DEFAULT_COVER=${config.defaultCoverUrl}
 ALIST_HOST=http://127.0.0.1:5244
+ALIST_PUBLIC_URL=${config.alistPublicUrl}
 ALIST_USER=admin
-ALIST_PASSWORD=${config.alistPassword}`;
+ALIST_PASSWORD=${config.alistPassword}
+CLOUDFLARED_TOKEN=${config.cloudflaredToken}`;
 
 export const PYTHON_BOT_SCRIPT = `import os
 import logging
@@ -51,6 +107,7 @@ GITHUB_PAT = os.getenv("GITHUB_PAT")
 RTMP_URL = os.getenv("RTMP_URL")
 DEFAULT_COVER = os.getenv("DEFAULT_COVER")
 ALIST_HOST = os.getenv("ALIST_HOST", "http://127.0.0.1:5244")
+ALIST_PUBLIC_URL = os.getenv("ALIST_PUBLIC_URL")
 ALIST_USER = os.getenv("ALIST_USER", "admin")
 ALIST_PASSWORD = os.getenv("ALIST_PASSWORD", "admin")
 
@@ -247,6 +304,13 @@ async def callback_handler(update: Update, context):
         res = alist_api("/api/fs/get", method="POST", data={"path": path})
         raw = res.get('data', {}).get('raw_url')
         if raw:
+            # Handle Localhost Replacement
+            if ALIST_PUBLIC_URL and (raw.startswith("http://127.0.0.1") or raw.startswith("http://localhost")):
+                # Remove the Alist host part and prepend public URL
+                # NOTE: This assumes ALIST_PUBLIC_URL is configured correctly in .env
+                # Simplistic replacement for standard Alist local proxy links
+                raw = raw.replace(ALIST_HOST, ALIST_PUBLIC_URL).replace("http://127.0.0.1:5244", ALIST_PUBLIC_URL)
+
             await query.message.reply_text(f"🚀 启动推流: {os.path.basename(path)}")
             success, info = trigger_github_workflow(raw, path)
             await query.message.reply_text(f"{'✅' if success else '❌'} {info}")
@@ -322,7 +386,30 @@ check_install ffmpeg ffmpeg
 check_install git git
 check_install node nodejs
 
-# 3. 检查 PM2 (Node.js 模块)
+# 3. 检查并安装 Cloudflared
+echo "☁️ 检查 Cloudflared..."
+if ! command -v cloudflared &> /dev/null; then
+    echo "📦 正在安装 Cloudflared..."
+    pkg install cloudflared -y 2>/dev/null || {
+        echo "⚠️ pkg install 失败，尝试启用 tur-repo..."
+        pkg install tur-repo -y 2>/dev/null
+        pkg install cloudflared -y 2>/dev/null || {
+           echo "⚠️ 源安装失败，尝试下载二进制文件..."
+           arch=$(uname -m)
+           case $arch in
+           aarch64) t="arm64" ;;
+           x86_64) t="amd64" ;;
+           *) t="arm64" ;;
+           esac
+           wget -O $PREFIX/bin/cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-$t
+           chmod +x $PREFIX/bin/cloudflared
+        }
+    }
+else
+    echo "✅ Cloudflared 已安装，跳过。"
+fi
+
+# 4. 检查 PM2 (Node.js 模块)
 if ! command -v pm2 &> /dev/null; then
     echo "📦 正在安装 PM2 进程管理器..."
     npm install -g pm2
@@ -330,36 +417,45 @@ else
     echo "✅ PM2 已安装，跳过。"
 fi
 
-# 4. 检查并更新 Python 依赖
+# 5. 检查并更新 Python 依赖
 echo "📦 检查 Python 依赖库..."
 pip install python-telegram-bot requests python-dotenv --upgrade
 
-# 5. 配置 Alist (解决无法登录问题)
+# 6. 配置 Alist
 echo "⚙️ 配置 Alist 服务..."
 
 # 先停止可能存在的实例
 pm2 stop alist 2>/dev/null
 
-# 强制重置 Alist 密码 (解决密码不匹配无法登录问题)
-# 注意：alist admin set 命令需要访问 data 目录
+# 强制重置 Alist 密码
 echo "🔑 正在初始化 Alist 数据库并设置密码..."
 if [ ! -f "data/data.db" ]; then
-  # 如果数据库不存在，先运行一次让其生成，然后后台杀掉
   timeout 5s alist server > /dev/null 2>&1
 fi
 alist admin set admin
 echo "✅ Alist 管理员密码已重置为: admin"
 
-# 6. 启动服务 (使用 PM2)
+# 读取环境变量中的 Cloudflared Token
+source .env
+
+# 7. 启动服务 (使用 PM2)
 echo "▶️ 启动服务..."
 pm2 start alist --name alist -- server
 pm2 start bot.py --name stream-bot --interpreter python
 
-# 7. 保存 PM2 状态以实现持久化
+if [ -n "$CLOUDFLARED_TOKEN" ]; then
+    echo "▶️ 启动 Cloudflared Tunnel (PM2 Managed)..."
+    pm2 delete tunnel 2>/dev/null || true
+    # Start Cloudflared with PM2.
+    # Note: 'cloudflared' command must be in path.
+    pm2 start cloudflared --name tunnel --restart-delay=3000 -- tunnel run --token "$CLOUDFLARED_TOKEN"
+fi
+
+# 8. 保存 PM2 状态以实现持久化
 echo "💾 保存当前进程状态..."
 pm2 save
 
-# 8. 配置 Termux 启动时自动恢复
+# 9. 配置 Termux 启动时自动恢复
 echo "🔌 配置开机(打开App)自启动..."
 if ! grep -q "pm2 resurrect" ~/.bashrc; then
     echo "# StreamForge Auto Start" >> ~/.bashrc
@@ -376,54 +472,10 @@ echo "📊 当前运行状态:"
 pm2 status
 echo "--------------------------------"
 echo "💡 提示:"
-echo "- 机器人: 请在 Telegram 中向您的 Bot 发送 /start"
-echo "- Alist 后台: http://127.0.0.1:5244"
-echo "- Alist 账号: admin"
-echo "- Alist 密码: admin"
+echo "- 机器人: /start"
+echo "- Alist: http://127.0.0.1:5244 (Local)"
+if [ -n "$ALIST_PUBLIC_URL" ]; then
+    echo "- Public: $ALIST_PUBLIC_URL"
+fi
 echo "--------------------------------"
-`;
-
-export const GITHUB_WORKFLOW_TEMPLATE = (config: StreamConfig) => `name: Alist Stream to Telegram
-
-on:
-  workflow_dispatch:
-    inputs:
-      file_url:
-        description: 'Media URL (Video or Audio)'
-        required: true
-      image_url:
-        description: 'Cover Image URL (For Audio Mode)'
-        required: false
-      rtmp_url:
-        description: 'RTMP URL'
-        required: true
-
-jobs:
-  stream:
-    runs-on: ubuntu-latest
-    timeout-minutes: 360 # 6 Hours Max
-    steps:
-      - uses: actions/checkout@v3
-      - name: Install FFmpeg
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg
-      
-      - name: Stream to Telegram
-        run: |
-          FILE_URL="\${{ github.event.inputs.file_url }}"
-          IMAGE_URL="\${{ github.event.inputs.image_url }}"
-          RTMP_URL="\${{ github.event.inputs.rtmp_url }}"
-          
-          if [ -n "$IMAGE_URL" ]; then
-            ffmpeg -re -loop 1 -framerate 30 -i "$IMAGE_URL" -i "$FILE_URL" \\
-              -c:v libx264 -preset medium -tune stillimage -b:v 4000k -maxrate 4000k -bufsize 8000k \\
-              -vf "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,format=yuv420p" \\
-              -c:a aac -b:a 320k -ar 48000 -ac 2 \\
-              -shortest -f flv "$RTMP_URL"
-          else
-            ffmpeg -re -i "$FILE_URL" \\
-              -c:v libx264 -preset medium -b:v ${config.videoBitrate} -maxrate ${config.videoBitrate} -bufsize 12000k \\
-              -vf "scale=1920:-2:flags=lanczos" -pix_fmt yuv420p -g 60 \\
-              -c:a aac -b:a 320k -ar 48000 -ac 2 \\
-              -f flv "$RTMP_URL"
-          fi
 `;

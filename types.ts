@@ -13,7 +13,11 @@ export interface StreamConfig {
 
   // Alist Configuration
   alistPassword: string;
+  alistPublicUrl: string; // New: Public domain for Alist (e.g., via Cloudflare)
   aria2Secret: string; // New: For offline download security
+
+  // Cloudflare
+  cloudflaredToken: string; // New: Tunnel token
 
   // File Defaults
   fileName: string;
