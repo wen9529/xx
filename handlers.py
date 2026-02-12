@@ -1,7 +1,8 @@
 import os
+import asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from config import ADMIN_ID, ALIST_HOST, ALIST_USER, ALIST_PASSWORD, RTMP_URL
-from modules import alist, tunnel, github, key_manager
+from modules import alist, tunnel, github, key_manager, updater
 
 async def start(update: Update, context):
     if str(update.effective_user.id) != str(ADMIN_ID): 
@@ -15,7 +16,7 @@ async def start(update: Update, context):
         ["🧲 离线下载 (Magnet/HTTP)"],
         ["🌐 开启/关闭 远程访问", "🔐 查看登录信息"],
         ["🛑 停止推流", "🔑 密钥管理"],
-        ["⚙️ 系统状态"]
+        ["⚙️ 系统状态", "🔄 更新系统"]
     ]
     
     await update.message.reply_text(
@@ -121,13 +122,34 @@ async def menu_handler(update: Update, context):
         
         await update.message.reply_text(f"🖥 **系统状态**:\n{alist_str}\n{tunnel_str}", parse_mode='Markdown')
 
+    elif msg == "🔄 更新系统":
+        status_msg = await update.message.reply_text("⏳ 正在检查更新并拉取代码...")
+        
+        # 在独立的线程或阻塞调用中运行更新，以免卡死 UI
+        # 简单起见，这里直接调用（git pull通常很快）
+        should_restart, result_text = updater.update_repo()
+        
+        await status_msg.edit_text(result_text, parse_mode='Markdown')
+        
+        if should_restart:
+            # 稍等一下让消息发送成功
+            await asyncio.sleep(2)
+            # 退出当前 Python 进程
+            # 由于 PM2 配置了 autorestart: true，进程退出后 PM2 会自动重启它
+            # 从而加载最新的 Python 代码
+            os._exit(0)
+
 async def handle_offline_download(update, url):
     await update.message.reply_text("⏳ 正在提交 Aria2 离线任务...")
     res = alist.add_aria2_task(url)
     if res.get('code') == 200:
         await update.message.reply_text(f"✅ 任务已添加！\n文件将下载到根目录。")
     else:
-        await update.message.reply_text(f"❌ 添加失败: {res.get('message')}")
+        err = res.get('message')
+        if "failed to add aria2 task" in str(err).lower():
+             await update.message.reply_text(f"❌ 添加失败: Alist 未连接到 Aria2。\n请进入 Alist 后台 -> 设置 -> 其他 -> Aria2，确保地址为 http://127.0.0.1:6800/jsonrpc 且密钥留空。")
+        else:
+             await update.message.reply_text(f"❌ 添加失败: {err}")
 
 async def show_file_list(update: Update, path, page):
     is_cb = bool(update.callback_query)
@@ -172,14 +194,21 @@ async def show_file_list(update: Update, path, page):
 async def callback_handler(update: Update, context):
     query = update.callback_query
     await query.answer()
+    
     data = query.data.split("|")
     action = data[0]
 
+    # 更加健壮的解析逻辑，防止路径中包含 | 导致解析错误
     if action == "nav":
-        await show_file_list(update, data[1], int(data[2]))
+        # 格式: nav|path|page
+        # 取最后一个作为 page，中间所有内容拼接为 path
+        page = int(data[-1])
+        path = "|".join(data[1:-1])
+        await show_file_list(update, path, int(page))
     
     elif action == "pre_stream":
-        path = data[1]
+        # 格式: pre_stream|path
+        path = "|".join(data[1:])
         context.user_data['pending_path'] = path
         keys = key_manager.load_keys()
         btns = []
@@ -200,7 +229,7 @@ async def callback_handler(update: Update, context):
 
         target_rtmp = RTMP_URL if key_name == "default" else key_manager.load_keys().get(key_name)
         if not target_rtmp:
-            await query.message.edit_text("❌ 无效的推流地址")
+            await query.message.edit_text(f"❌ 无效的推流地址: {key_name}")
             return
 
         await query.message.edit_text(f"🔄 正在获取直链...\n文件: `{os.path.basename(path)}`", parse_mode='Markdown')
@@ -220,11 +249,12 @@ async def callback_handler(update: Update, context):
         await query.message.reply_text("⌨️ 请输入新推流地址的名称 (例如: Live1):")
         
     elif action == "delkey":
+        key_to_del = data[1]
         keys = key_manager.load_keys()
-        if data[1] in keys:
-            del keys[data[1]]
+        if key_to_del in keys:
+            del keys[key_to_del]
             key_manager.save_keys(keys)
-            await query.message.reply_text(f"🗑 已删除 {data[1]}")
+            await query.message.reply_text(f"🗑 已删除 {key_to_del}")
     
     elif action == "cancel":
         await query.message.delete()

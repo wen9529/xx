@@ -90,37 +90,60 @@ EOF
     echo "✅ .env 创建完成"
 fi
 
-# 7. 生成 PM2 Ecosystem 配置
-echo "🤖 生成进程管理配置 (ecosystem.config.js)..."
-cat <<EOF > ecosystem.config.js
-module.exports = {
-  apps : [{
-    name   : "alist",
-    script : "alist",
-    args   : "server",
-    interpreter: "none"
-  }, {
-    name   : "aria2",
-    script : "aria2c",
-    args   : "--conf-path=./aria2.conf",
-    interpreter: "none"
-  }, {
-    name   : "stream-bot",
-    script : "bot.py",
-    interpreter: "python"
-  }]
+# 7. 生成 PM2 Ecosystem 配置 (使用 JSON 格式以兼容所有环境)
+echo "🤖 生成进程管理配置 (ecosystem.config.json)..."
+
+# 清理旧的配置文件，避免冲突
+rm -f ecosystem.config.js ecosystem.config.cjs
+
+cat <<EOF > ecosystem.config.json
+{
+  "apps": [
+    {
+      "name": "alist",
+      "script": "alist",
+      "args": "server",
+      "interpreter": "none",
+      "autorestart": true
+    },
+    {
+      "name": "aria2",
+      "script": "aria2c",
+      "args": "--conf-path=./aria2.conf",
+      "interpreter": "none",
+      "autorestart": true
+    },
+    {
+      "name": "stream-bot",
+      "script": "bot.py",
+      "interpreter": "python",
+      "autorestart": true,
+      "env": {
+        "PYTHONUNBUFFERED": "1"
+      }
+    },
+    {
+      "name": "watcher",
+      "script": "watcher.py",
+      "interpreter": "python",
+      "autorestart": true,
+      "env": {
+        "PYTHONUNBUFFERED": "1"
+      }
+    }
+  ]
 }
 EOF
 
 echo "🎉 安装修复完成！"
 echo "------------------------------------------------"
-echo "请执行以下命令启动所有服务："
-echo "pm2 delete all  # 清理旧进程"
-echo "pm2 start ecosystem.config.js  # 启动新配置"
-echo "pm2 save       # 保存开机自启"
-echo "pm2 logs       # 查看日志"
+echo "请执行以下命令重启所有服务以加载自动更新模块："
+echo "pm2 delete all                     # 1. 清理旧进程"
+echo "pm2 start ecosystem.config.json    # 2. 启动新配置 (包含 watcher)"
+echo "pm2 save                           # 3. 保存开机自启"
+echo "pm2 logs watcher                   # 4. 查看自动更新日志"
 echo "------------------------------------------------"
-echo "⚠️ 注意：请确保在 Alist 后台 -> 设置 -> 其他 -> Aria2 中："
+echo "⚠️  重要提示：请确保在 Alist 后台 -> 设置 -> 其他 -> Aria2 中配置："
 echo "   Aria2 地址: http://127.0.0.1:6800/jsonrpc"
 echo "   Aria2 密钥: (留空)"
 echo "------------------------------------------------"
