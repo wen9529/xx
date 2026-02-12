@@ -10,34 +10,49 @@ logging.basicConfig(
 )
 logger = logging.getLogger("StreamForge")
 
-# --- 加载环境变量 ---
-# 1. 尝试加载当前目录的 .env
-load_dotenv()
+# --- 环境变量加载逻辑 (增强版) ---
+# 1. 获取当前脚本所在目录的绝对路径
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# 2. 定义可能的 .env 路径
+LOCAL_ENV = os.path.join(BASE_DIR, '.env')
+PARENT_ENV = os.path.abspath(os.path.join(BASE_DIR, '..', '.env')) # 上级目录
 
-# 2. 如果当前目录没有 Token (或为空)，尝试加载上级目录的 .env
-# 注意：如果本地 .env 存在但变量为空，load_dotenv 可能会将其置为空字符串
-if not os.getenv("TG_BOT_TOKEN"):
-    parent_env = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '.env')
-    if os.path.exists(parent_env):
-        logger.info(f"正在加载上级目录配置文件: {parent_env}")
-        # 关键: 使用 override=True 覆盖本地可能存在的空值，解决本地有空 .env 导致的问题
-        load_dotenv(dotenv_path=parent_env, override=True)
+# 3. 强制加载逻辑
+env_loaded = False
 
-# 配置常量
+# 优先加载上级目录 (按照您的描述，配置文件在根目录)
+if os.path.exists(PARENT_ENV):
+    logger.info(f"正在加载配置文件: {PARENT_ENV}")
+    load_dotenv(dotenv_path=PARENT_ENV, override=True)
+    env_loaded = True
+
+# 其次加载当前目录 (如果存在)
+if os.path.exists(LOCAL_ENV):
+    logger.info(f"正在加载配置文件: {LOCAL_ENV}")
+    # 如果上级没加载，或者想用本地覆盖，这里加载
+    load_dotenv(dotenv_path=LOCAL_ENV, override=not env_loaded)
+    env_loaded = True
+
+# --- 配置读取 ---
 BOT_TOKEN = os.getenv("TG_BOT_TOKEN")
 ADMIN_ID = os.getenv("TG_ADMIN_ID")
+
+# 检查关键配置
+if not BOT_TOKEN:
+    logger.error("❌ 严重错误: 未找到 TG_BOT_TOKEN")
+    logger.error(f"已尝试路径: \n1. {PARENT_ENV} (存在: {os.path.exists(PARENT_ENV)})\n2. {LOCAL_ENV} (存在: {os.path.exists(LOCAL_ENV)})")
+    logger.error("请检查文件内容是否包含 TG_BOT_TOKEN=your_token")
+    sys.exit(1)
+
 GITHUB_OWNER = os.getenv("GITHUB_OWNER")
 GITHUB_REPO = os.getenv("GITHUB_REPO")
 GITHUB_PAT = os.getenv("GITHUB_PAT")
 RTMP_URL = os.getenv("RTMP_URL")
+# Alist 配置
 ALIST_HOST = os.getenv("ALIST_HOST", "http://127.0.0.1:5244").rstrip('/')
 ALIST_USER = os.getenv("ALIST_USER", "admin")
 ALIST_PASSWORD = os.getenv("ALIST_PASSWORD", "admin")
 ALIST_PUBLIC_URL_STATIC = os.getenv("ALIST_PUBLIC_URL", "").rstrip('/')
 
-KEYS_FILE = "stream_keys.json"
-CLOUDFLARED_BIN = "./cloudflared"
-
-if not BOT_TOKEN:
-    logger.error("❌ 未找到 TG_BOT_TOKEN，请检查 .env 文件 (已检查当前及上级目录)")
-    sys.exit(1)
+KEYS_FILE = os.path.join(BASE_DIR, "stream_keys.json")
+CLOUDFLARED_BIN = os.path.join(BASE_DIR, "cloudflared")

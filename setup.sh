@@ -2,58 +2,79 @@
 
 # StreamForge Termux Setup Script
 
-echo "🚀 开始安装依赖环境..."
+echo "🚀 开始安装/修复依赖环境..."
 
-# 1. 更新包管理器并安装基础工具
-pkg update -y && pkg upgrade -y
+# 1. 基础工具安装
+pkg update -y 
 pkg install -y python ffmpeg git nodejs wget aria2
 
-# 2. 安装 Python 依赖
-echo "🐍 安装 Python 库..."
+# 2. Python 依赖
+echo "🐍 安装/更新 Python 库..."
 pip install python-telegram-bot requests python-dotenv
 
-# 3. 安装 Cloudflared (用于内网穿透)
-echo "☁️ 正在安装 Cloudflared (用于远程访问)..."
+# 3. 安装 PM2 (如果未安装)
+if ! command -v pm2 &> /dev/null; then
+    echo "📦 安装 PM2..."
+    npm install pm2 -g
+fi
+
+# 4. Cloudflared
+echo "☁️ 检查 Cloudflared..."
 if [ ! -f "cloudflared" ]; then
-    echo "下载 cloudflared-linux-android-arm64..."
+    echo "下载 cloudflared..."
     wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-android-arm64 -O cloudflared
     chmod +x cloudflared
-    echo "✅ Cloudflared 下载完成"
 else
     echo "✅ Cloudflared 已存在"
 fi
 
-# 4. 配置 .env
-echo "📝 配置环境变量..."
-CONFIG_NEEDED=true
-
-if [ -f ".env" ]; then
-    echo "⚠️ 检测到现有的 .env 配置文件。"
-    read -p "❓ 是否重新输入配置信息 (Bot Token 等)? (y/n, 默认 n): " RECONFIG
-    if [[ "$RECONFIG" != "y" ]]; then
-        CONFIG_NEEDED=false
-        echo "✅ 跳过配置，使用现有 .env 文件。"
-    else
-        echo "🔄 开始重新配置..."
-    fi
-elif [ -f "../.env" ]; then
-    echo "⚠️ 检测到上级目录存在 .env 配置文件。"
-    read -p "❓ 是否直接使用上级目录配置? (y/n, 默认 y): " USE_PARENT
-    if [[ "$USE_PARENT" != "n" ]]; then
-        CONFIG_NEEDED=false
-        echo "✅ 跳过本地配置，Bot 将读取上级目录的 .env 文件。"
-    fi
+# 5. 配置 Aria2
+echo "⚙️ 配置 Aria2..."
+if [ ! -f "aria2.session" ]; then
+    touch aria2.session
 fi
 
-if [ "$CONFIG_NEEDED" = true ]; then
+if [ ! -f "aria2.conf" ]; then
+    cat <<EOF > aria2.conf
+# 开启 RPC
+enable-rpc=true
+# 允许所有来源
+rpc-allow-origin-all=true
+# 允许非外部访问
+rpc-listen-all=false
+# RPC 端口
+rpc-listen-port=6800
+# RPC 密钥 (留空则无密码，方便 Termux 本地使用)
+# rpc-secret=你的密码
+# 文件保存路径 (默认当前目录下的 downloads)
+dir=${HOME}/downloads
+# 断点续传
+continue=true
+# 进度保存
+input-file=$(pwd)/aria2.session
+save-session=$(pwd)/aria2.session
+save-session-interval=60
+EOF
+    echo "✅ aria2.conf 已创建"
+fi
+
+# 6. 配置 .env
+echo "📝 检查环境变量..."
+CONFIG_PATH=""
+
+if [ -f "../.env" ]; then
+    echo "✅ 在上级目录找到 .env，将使用该配置。"
+    CONFIG_PATH="../.env"
+elif [ -f ".env" ]; then
+    echo "✅ 在当前目录找到 .env。"
+    CONFIG_PATH=".env"
+else
+    echo "⚠️ 未找到配置文件，开始创建..."
     read -p "请输入 Telegram Bot Token: " TG_BOT_TOKEN
-    read -p "请输入你的 Telegram ID (Admin ID): " TG_ADMIN_ID
-    read -p "请输入 GitHub 用户名 (Owner): " GITHUB_OWNER
-    read -p "请输入 GitHub 仓库名 (Repo): " GITHUB_REPO
-    read -p "请输入 GitHub PAT (Token): " GITHUB_PAT
-    read -p "请输入默认 RTMP 推流地址 (可选): " RTMP_URL
-    echo "提示: 公网地址可在 Bot 中动态生成，此处可留空。"
-    read -p "请输入 Alist 公网地址 (留空则使用动态隧道): " ALIST_PUBLIC_URL
+    read -p "请输入 Admin ID: " TG_ADMIN_ID
+    read -p "GitHub Owner: " GITHUB_OWNER
+    read -p "GitHub Repo: " GITHUB_REPO
+    read -p "GitHub PAT: " GITHUB_PAT
     
     cat <<EOF > .env
 TG_BOT_TOKEN=$TG_BOT_TOKEN
@@ -61,15 +82,45 @@ TG_ADMIN_ID=$TG_ADMIN_ID
 GITHUB_OWNER=$GITHUB_OWNER
 GITHUB_REPO=$GITHUB_REPO
 GITHUB_PAT=$GITHUB_PAT
-RTMP_URL=$RTMP_URL
+RTMP_URL=
 ALIST_HOST=http://127.0.0.1:5244
-ALIST_PUBLIC_URL=$ALIST_PUBLIC_URL
 ALIST_USER=admin
 ALIST_PASSWORD=admin
 EOF
-    echo "✅ .env 文件已更新！"
+    echo "✅ .env 创建完成"
 fi
 
-echo "🎉 安装完成！"
-echo "请确保 Alist 已经在后台运行 (alist server) 且已安装 aria2 (pkg install aria2)。"
-echo "运行机器人: python bot.py"
+# 7. 生成 PM2 Ecosystem 配置
+echo "🤖 生成进程管理配置 (ecosystem.config.js)..."
+cat <<EOF > ecosystem.config.js
+module.exports = {
+  apps : [{
+    name   : "alist",
+    script : "alist",
+    args   : "server",
+    interpreter: "none"
+  }, {
+    name   : "aria2",
+    script : "aria2c",
+    args   : "--conf-path=./aria2.conf",
+    interpreter: "none"
+  }, {
+    name   : "stream-bot",
+    script : "bot.py",
+    interpreter: "python"
+  }]
+}
+EOF
+
+echo "🎉 安装修复完成！"
+echo "------------------------------------------------"
+echo "请执行以下命令启动所有服务："
+echo "pm2 delete all  # 清理旧进程"
+echo "pm2 start ecosystem.config.js  # 启动新配置"
+echo "pm2 save       # 保存开机自启"
+echo "pm2 logs       # 查看日志"
+echo "------------------------------------------------"
+echo "⚠️ 注意：请确保在 Alist 后台 -> 设置 -> 其他 -> Aria2 中："
+echo "   Aria2 地址: http://127.0.0.1:6800/jsonrpc"
+echo "   Aria2 密钥: (留空)"
+echo "------------------------------------------------"

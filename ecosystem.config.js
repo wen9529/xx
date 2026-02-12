@@ -1,0 +1,23 @@
+module.exports = {
+  apps : [{
+    name   : "alist",
+    script : "alist",
+    args   : "server",
+    interpreter: "none",
+    autorestart: true
+  }, {
+    name   : "aria2",
+    script : "aria2c",
+    args   : "--conf-path=./aria2.conf",
+    interpreter: "none",
+    autorestart: true
+  }, {
+    name   : "stream-bot",
+    script : "bot.py",
+    interpreter: "python",
+    autorestart: true,
+    env: {
+      PYTHONUNBUFFERED: "1"
+    }
+  }]
+}
