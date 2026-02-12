@@ -5,12 +5,15 @@ from config import ADMIN_ID, ALIST_HOST, ALIST_USER, ALIST_PASSWORD, RTMP_URL
 from modules import alist, tunnel, github, key_manager, updater
 
 async def start(update: Update, context):
+    """发送主菜单"""
     if str(update.effective_user.id) != str(ADMIN_ID): 
         await update.message.reply_text("⛔️ 无权访问")
         return
     
+    # 清理之前的状态
     context.user_data.clear()
     
+    # 定义主菜单键盘
     keyboard = [
         ["📂 浏览云盘"],
         ["🧲 离线下载 (Magnet/HTTP)"],
@@ -22,28 +25,32 @@ async def start(update: Update, context):
     await update.message.reply_text(
         "👋 **StreamForge 控制台**\n\n"
         "👇 **请使用下方键盘操作**\n"
-        "💡 提示：如果未看到键盘，请点击输入框右侧的图标，或输入 /menu 重试。\n"
+        "💡 提示：如果键盘消失，请点击输入框右侧图标或输入 /menu 重试。\n"
         "📌 快捷方式：直接发送磁力链接给我也能下载。",
         reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True),
         parse_mode='Markdown'
     )
 
 async def download_command(update: Update, context):
+    """处理 /download 命令"""
     if str(update.effective_user.id) != str(ADMIN_ID): return
     context.user_data['state'] = 'AWAITING_LINK'
     await update.message.reply_text("📥 **请发送磁力链接 (Magnet) 或 HTTP 链接**", parse_mode='Markdown')
 
 async def menu_handler(update: Update, context):
+    """处理主菜单文本点击和状态机逻辑"""
     if str(update.effective_user.id) != str(ADMIN_ID): return
     msg = update.message.text.strip()
     
-    # 1. 快速下载
+    # --- 1. 快捷下载拦截 ---
     if msg.startswith("magnet:?") or (msg.startswith("http") and not context.user_data.get('state')):
         await handle_offline_download(update, msg)
         return
 
-    # 2. 状态机处理
+    # --- 2. 状态机逻辑 (处理多步操作) ---
     state = context.user_data.get('state')
+    
+    # 状态: 等待下载链接
     if state == 'AWAITING_LINK':
         if msg == "/cancel":
             context.user_data.clear()
@@ -54,12 +61,14 @@ async def menu_handler(update: Update, context):
         context.user_data['state'] = None
         return
 
+    # 状态: 等待输入新密钥名称
     if state == 'AWAITING_KEY_NAME':
         context.user_data['new_key_name'] = msg
         context.user_data['state'] = 'AWAITING_KEY_URL'
         await update.message.reply_text(f"📝 名称: {msg}\n👉 请输入完整 RTMP 地址:")
         return
     
+    # 状态: 等待输入新密钥地址
     if state == 'AWAITING_KEY_URL':
         name = context.user_data.get('new_key_name')
         keys = key_manager.load_keys()
@@ -69,7 +78,8 @@ async def menu_handler(update: Update, context):
         await update.message.reply_text(f"✅ 密钥 **{name}** 已保存", parse_mode='Markdown')
         return
 
-    # 3. 菜单按钮
+    # --- 3. 菜单按钮响应 ---
+    
     if msg == "📂 浏览云盘":
         await update.message.reply_text("🔍 读取根目录...")
         await show_file_list(update, "/", 1)
@@ -125,21 +135,18 @@ async def menu_handler(update: Update, context):
     elif msg == "🔄 更新系统":
         status_msg = await update.message.reply_text("⏳ 正在检查更新并拉取代码...")
         
-        # 在独立的线程或阻塞调用中运行更新，以免卡死 UI
-        # 简单起见，这里直接调用（git pull通常很快）
+        # 执行更新检查
         should_restart, result_text = updater.update_repo()
         
         await status_msg.edit_text(result_text, parse_mode='Markdown')
         
         if should_restart:
-            # 稍等一下让消息发送成功
             await asyncio.sleep(2)
-            # 退出当前 Python 进程
-            # 由于 PM2 配置了 autorestart: true，进程退出后 PM2 会自动重启它
-            # 从而加载最新的 Python 代码
+            # 退出进程，依赖 PM2 重启
             os._exit(0)
 
 async def handle_offline_download(update, url):
+    """处理离线下载请求"""
     await update.message.reply_text("⏳ 正在提交 Aria2 离线任务...")
     res = alist.add_aria2_task(url)
     if res.get('code') == 200:
@@ -152,6 +159,7 @@ async def handle_offline_download(update, url):
              await update.message.reply_text(f"❌ 添加失败: {err}")
 
 async def show_file_list(update: Update, path, page):
+    """显示文件列表"""
     is_cb = bool(update.callback_query)
     message = update.callback_query.message if is_cb else update.message
     
@@ -165,10 +173,12 @@ async def show_file_list(update: Update, path, page):
     content.sort(key=lambda x: x['is_dir'], reverse=True)
     
     buttons = []
+    # 返回上级按钮
     if path != "/":
         parent = os.path.dirname(path.rstrip('/')) or "/"
         buttons.append([InlineKeyboardButton("🔙 返回上级", callback_data=f"nav|{parent}|1")])
     
+    # 文件/文件夹按钮
     for item in content:
         name = item['name']
         display_name = (name[:20] + '..') if len(name) > 20 else name
@@ -179,6 +189,7 @@ async def show_file_list(update: Update, path, page):
         else:
             buttons.append([InlineKeyboardButton(f"▶️ {display_name}", callback_data=f"pre_stream|{full_path}")])
 
+    # 翻页按钮
     nav_row = []
     if page > 1: nav_row.append(InlineKeyboardButton("⬅️ 上一页", callback_data=f"nav|{path}|{page-1}"))
     if page * 10 < total: nav_row.append(InlineKeyboardButton("➡️ 下一页", callback_data=f"nav|{path}|{page+1}"))
@@ -192,22 +203,22 @@ async def show_file_list(update: Update, path, page):
         await message.reply_text(text, reply_markup=markup, parse_mode='Markdown')
 
 async def callback_handler(update: Update, context):
+    """处理内联键盘回调"""
     query = update.callback_query
     await query.answer()
     
     data = query.data.split("|")
     action = data[0]
 
-    # 更加健壮的解析逻辑，防止路径中包含 | 导致解析错误
+    # nav|path|page
     if action == "nav":
-        # 格式: nav|path|page
-        # 取最后一个作为 page，中间所有内容拼接为 path
         page = int(data[-1])
+        # 重新组合中间可能被分割的路径
         path = "|".join(data[1:-1])
         await show_file_list(update, path, int(page))
     
+    # pre_stream|path
     elif action == "pre_stream":
-        # 格式: pre_stream|path
         path = "|".join(data[1:])
         context.user_data['pending_path'] = path
         keys = key_manager.load_keys()
@@ -220,6 +231,7 @@ async def callback_handler(update: Update, context):
         
         await query.message.reply_text(f"🎬 准备推流: `{os.path.basename(path)}`\n请选择推流目标:", reply_markup=InlineKeyboardMarkup(btns), parse_mode='Markdown')
 
+    # stream|key_name
     elif action == "stream":
         key_name = data[1]
         path = context.user_data.get('pending_path')
@@ -244,10 +256,12 @@ async def callback_handler(update: Update, context):
         icon = "✅" if success else "❌"
         await query.message.reply_text(f"{icon} 推流请求结果: {msg}")
 
+    # addkey
     elif action == "addkey":
         context.user_data['state'] = 'AWAITING_KEY_NAME'
         await query.message.reply_text("⌨️ 请输入新推流地址的名称 (例如: Live1):")
         
+    # delkey|name
     elif action == "delkey":
         key_to_del = data[1]
         keys = key_manager.load_keys()
@@ -256,5 +270,6 @@ async def callback_handler(update: Update, context):
             key_manager.save_keys(keys)
             await query.message.reply_text(f"🗑 已删除 {key_to_del}")
     
+    # cancel
     elif action == "cancel":
         await query.message.delete()
