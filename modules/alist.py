@@ -1,6 +1,7 @@
 import requests
 import time
 import json
+import os
 from config import ALIST_HOST, ALIST_USER, ALIST_PASSWORD, logger
 
 alist_token = None
@@ -58,7 +59,9 @@ def alist_api(endpoint, method="POST", data=None):
             try:
                 json_data = res.json()
             except json.JSONDecodeError:
-                return {"code": 500, "message": f"Alist 返回了非 JSON 数据 (状态码 {res.status_code}):\n{res.text[:200]}"}
+                # 优化 HTML 错误信息的显示
+                preview = res.text[:200].replace('\n', ' ')
+                return {"code": 500, "message": f"Alist 返回了无效数据 (HTML): {preview}..."}
             
             # Token 过期处理
             if res.status_code == 200 and json_data.get('code') == 401:
@@ -84,13 +87,19 @@ def add_aria2_task(url):
     res = alist_api("/api/fs/add_offline_download", data={"paths": ["/"], "urls": [url], "tool": "aria2"})
     
     if res.get('code') != 200:
+         # 特别处理 storage not found 错误
+         if "storage not found" in str(res.get('message')):
+             # 尝试自动修复
+             logger.info("检测到未配置存储，尝试自动初始化...")
+             if init_default_storage():
+                 # 重新尝试添加任务
+                 return alist_api("/api/fs/add_offline_download", data={"paths": ["/"], "urls": [url], "tool": "aria2"})
+         
          logger.info(f"v3 API 失败 ({res.get('message')})，尝试 v2 API...")
          res_old = alist_api("/api/fs/offline/add", data={"path": "/", "urls": [url], "tool": "aria2"})
          if res_old.get('code') == 200:
              return res_old
          else:
-             # 如果两者都失败，返回 v3 的错误信息，通常更准确
-             # 或者合并错误信息
              res['message'] = f"v3: {res.get('message')} | v2: {res_old.get('message')}"
     return res
 
@@ -107,7 +116,6 @@ def get_file_url(path):
         
     url = res.get('data', {}).get('raw_url')
     if not url:
-        # 有时候 raw_url 为空，可能是文件夹或者权限问题
         return None, f"未找到直链 (raw_url 为空)。API数据: {str(res.get('data'))[:100]}"
         
     return url, None
@@ -117,4 +125,56 @@ def get_system_status():
         res = requests.get(f"{ALIST_HOST}/api/public/settings", timeout=5)
         return True if res.status_code == 200 else False
     except:
+        return False
+
+# --- 新增: 自动初始化存储 ---
+def init_default_storage():
+    """
+    检查 Alist 是否有存储，如果没有，自动挂载 Termux 的 ~/downloads 目录到根目录 /
+    """
+    logger.info("检查 Alist 存储挂载状态...")
+    res = alist_api("/api/admin/storage/list", method="GET")
+    
+    if res.get('code') == 200:
+        content = res.get('data', {}).get('content', [])
+        if len(content) > 0:
+            logger.info(f"检测到已有 {len(content)} 个存储，跳过初始化。")
+            return True
+        else:
+            logger.info("存储列表为空，正在添加默认本地存储...")
+            # 构造本地存储配置
+            home_dir = os.environ.get("HOME", "/data/data/com.termux/files/home")
+            download_dir = os.path.join(home_dir, "downloads")
+            
+            # 确保目录存在
+            if not os.path.exists(download_dir):
+                os.makedirs(download_dir)
+            
+            payload = {
+                "mount_path": "/",
+                "order": 0,
+                "remark": "Termux Local",
+                "cache_expiration": 30,
+                "web_proxy": False,
+                "webdav_policy": "302_redirect",
+                "down_proxy_url": "",
+                "extract_folder": "",
+                "driver": "Local",
+                "addition": json.dumps({
+                    "root_folder_path": download_dir,
+                    "thumbnail": False,
+                    "thumb_cache_folder": "",
+                    "show_hidden": True
+                })
+            }
+            
+            add_res = alist_api("/api/admin/storage/create", method="POST", data=payload)
+            if add_res.get('code') == 200:
+                logger.info("✅ 成功挂载本地存储到 /")
+                return True
+            else:
+                logger.error(f"❌ 挂载存储失败: {add_res}")
+                return False
+    else:
+        logger.error(f"无法获取存储列表: {res}")
         return False

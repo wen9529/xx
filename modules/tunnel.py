@@ -11,9 +11,6 @@ current_public_url = None
 async def start_cloudflared():
     """
     启动 Cloudflared 隧道
-    返回: (url, error_message)
-    如果成功，url 为地址，error_message 为 None
-    如果失败，url 为 None，error_message 为日志内容的最后几行
     """
     global tunnel_process, current_public_url
     
@@ -29,11 +26,20 @@ async def start_cloudflared():
         log_file = os.path.join(BASE_DIR, "tunnel.log")
         if os.path.exists(log_file): os.remove(log_file)
 
-        # 增加 --protocol http2 可能有助于稳定性，视情况而定
         cmd = [CLOUDFLARED_BIN, "tunnel", "--url", ALIST_HOST, "--logfile", log_file]
         logger.info(f"执行命令: {' '.join(cmd)}")
         
-        tunnel_process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            tunnel_process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except OSError as e:
+            # 捕获 Exec format error (通常是二进制架构不对)
+            if e.errno == 8: # Exec format error
+                logger.error(f"Cloudflared 无法运行 (架构不兼容): {e}")
+                # 尝试删除错误的文件
+                try: os.remove(CLOUDFLARED_BIN) 
+                except: pass
+                return None, "❌ Cloudflared 二进制文件架构不兼容或已损坏。\n已自动删除错误文件。\n请重新发送 '🔄 更新系统' 来重新下载正确版本。"
+            raise e
         
         logger.info("Cloudflared 进程已启动，等待 URL 生成...")
         
@@ -45,8 +51,10 @@ async def start_cloudflared():
             if tunnel_process.poll() is not None:
                 err_code = tunnel_process.returncode
                 logger.error(f"Cloudflared 意外退出，退出码: {err_code}")
+                
+                # 读取日志查找原因
                 log_content = _read_log_tail(log_file)
-                return None, f"进程意外退出 (Code {err_code})。\n日志末尾:\n{log_content}"
+                return None, f"进程意外退出 (Code {err_code})。\n日志:\n{log_content}"
 
             # 检查日志文件
             if os.path.exists(log_file):
@@ -60,34 +68,25 @@ async def start_cloudflared():
                             logger.info(f"✅ 获取到隧道 URL: {current_public_url}")
                             return current_public_url, None
                         
-                        # 检查常见错误
                         if "bind: address already in use" in content:
-                            return None, "端口被占用，请尝试重启 Termux 或杀掉旧进程。"
-                        if "Error" in content and "Retrying" not in content:
-                            # 简单的错误捕获
-                            pass
+                            return None, "端口被占用，请尝试重启 Termux。"
                 except Exception as e:
                     logger.warning(f"读取日志文件出错: {e}")
         
         # 超时处理
-        logger.error("等待隧道 URL 超时")
-        log_content = _read_log_tail(log_file)
         stop_cloudflared()
-        return None, f"启动超时 (20s)，未在日志中找到 URL。\n日志末尾:\n{log_content}"
+        return None, "启动超时，未在日志中找到 URL。"
 
     except Exception as e:
         logger.error(f"启动隧道发生异常: {e}", exc_info=True)
         stop_cloudflared()
-        return None, f"Python 异常: {str(e)}"
+        return None, f"系统异常: {str(e)}"
 
-def _read_log_tail(filepath, lines=15):
-    """读取日志文件末尾 n 行"""
-    if not os.path.exists(filepath):
-        return "日志文件不存在"
+def _read_log_tail(filepath, lines=10):
+    if not os.path.exists(filepath): return "无日志文件"
     try:
         with open(filepath, 'r', errors='ignore') as f:
-            content = f.readlines()
-            return "".join(content[-lines:])
+            return "".join(f.readlines()[-lines:])
     except:
         return "无法读取日志"
 
