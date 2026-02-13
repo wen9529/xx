@@ -1,4 +1,5 @@
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters
+from telegram import Update
 from config import BOT_TOKEN, ALIST_HOST, logger
 import handlers
 import traceback
@@ -57,4 +58,6 @@ if __name__ == "__main__":
     app.add_handler(CallbackQueryHandler(handlers.callback_handler))
     
     print("✅ Bot 已成功运行，正在监听消息...", flush=True)
-    app.run_polling()
+    
+    # 允许所有更新类型，并丢弃 pending updates 避免启动时处理旧消息导致逻辑错误
+    app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)

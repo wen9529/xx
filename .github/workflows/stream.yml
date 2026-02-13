@@ -29,13 +29,26 @@ jobs:
           FILE_URL="${{ inputs.file_url }}"
           RTMP_URL="${{ inputs.rtmp_url }}"
           
-          echo "Source: $FILE_URL"
           echo "Target: RTMP Server"
+          # 隐藏敏感 URL 避免日志泄露
+          echo "Starting stream..."
           
-          # FFmpeg 推流命令
-          # -re: 按本机帧率读取输入（模拟实时流）
-          # -i: 输入文件
-          # -c:v copy -c:a copy: 直接复制流，不转码（节省 CPU，速度最快，但要求源文件编码兼容）
-          # 如果遇到编码问题，可以将 -c:v copy 改为 -c:v libx264 -preset veryfast -b:v 4000k
+          # FFmpeg 优化参数说明:
+          # -re: 实时读取 (Real-time)
+          # -headers: 伪装 User-Agent，防止某些网盘直接拒绝
+          # -reconnect 1: 开启断线重连
+          # -reconnect_streamed 1: 允许流式重连
+          # -reconnect_delay_max 5: 最大重连等待时间
+          # -i: 输入 URL
+          # -c:v copy -c:a copy: 直接推流不转码 (Copy mode)
+          # -bsf:a aac_adtstoasc: 修复 TS/FLV 容器的 AAC 音频流格式
+          # -f flv: 输出格式为 flv (RTMP 标准)
           
-          ffmpeg -re -i "$FILE_URL" -c:v copy -c:a aac -strict experimental -f flv "$RTMP_URL"
+          ffmpeg \
+            -re \
+            -user_agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36" \
+            -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 \
+            -i "$FILE_URL" \
+            -c:v copy -c:a copy \
+            -bsf:a aac_adtstoasc \
+            -f flv "$RTMP_URL"

@@ -4,42 +4,49 @@ import logging
 import traceback
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from config import ADMIN_ID, ALIST_HOST, ALIST_USER, ALIST_PASSWORD, RTMP_URL, logger
-from modules import alist, tunnel, github, key_manager, updater
+from modules import alist, tunnel, github, key_manager, updater, cache
 
-# 使用单竖线作为分隔符
-SEP = "|"
+# 使用单竖线作为分隔符 (Telegram Callback Data 限制 64 字节)
+SEP = ":"
+
+# --- 辅助函数 ---
+def _get_icon(name, is_dir):
+    if is_dir: return "📁"
+    ext = os.path.splitext(name)[1].lower()
+    if ext in ['.mp4', '.mkv', '.avi', '.mov', '.flv', '.webm', '.ts', '.m3u8', '.wmv']: return "🎬"
+    if ext in ['.mp3', '.flac', '.wav', '.aac', '.ogg', '.m4a']: return "🎵"
+    if ext in ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp']: return "🖼️"
+    if ext in ['.zip', '.rar', '.7z', '.tar', '.gz', '.iso']: return "📦"
+    if ext in ['.py', '.sh', '.js', '.json', '.xml', '.html', '.txt', '.md']: return "📝"
+    return "📄"
+
+# --- 主菜单逻辑 ---
 
 async def start(update: Update, context):
     """发送主菜单"""
     try:
         user_id = str(update.effective_user.id)
-        admin_id = str(ADMIN_ID)
-        
-        logger.info(f"User {user_id} triggered /start")
-        
-        if user_id != admin_id: 
-            logger.warning(f"Unauthorized access attempt by {user_id}")
+        if user_id != str(ADMIN_ID): 
             await update.message.reply_text(f"⛔️ 无权访问\nID: {user_id}")
             return
         
         context.user_data.clear()
         
         keyboard = [
-            ["📂 浏览云盘"],
-            ["🧲 离线下载"],
+            ["📂 浏览云盘", "🧲 离线下载"],
             ["🌐 远程访问", "🔐 登录信息"],
             ["🛑 停止推流", "🔑 密钥管理"],
             ["⚙️ 系统状态", "🔄 更新系统"]
         ]
         
         await update.message.reply_text(
-            "👋 **StreamForge 控制台**\n请选择操作：",
+            "👋 **StreamForge 控制台**\n(功能已完善)\n请选择操作：",
             reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True),
             parse_mode='Markdown'
         )
     except Exception as e:
         logger.error(f"Start handler error: {e}", exc_info=True)
-        await update.message.reply_text(f"❌ 初始化失败: {e}")
+        await _reply_error(update, e)
 
 async def download_command(update: Update, context):
     if str(update.effective_user.id) != str(ADMIN_ID): return
@@ -47,13 +54,11 @@ async def download_command(update: Update, context):
     await update.message.reply_text("📥 **请发送磁力链接 (Magnet) 或 HTTP 链接**", parse_mode='Markdown')
 
 async def menu_handler(update: Update, context):
-    """处理主菜单点击"""
     try:
         if str(update.effective_user.id) != str(ADMIN_ID): return
         msg = update.message.text.strip()
-        logger.info(f"Menu action: {msg}")
         
-        # 1. 优先处理状态机
+        # --- 状态机处理 (输入链接/密钥) ---
         state = context.user_data.get('state')
         
         if msg.startswith("magnet:?") or (msg.startswith("http") and not state):
@@ -72,12 +77,9 @@ async def menu_handler(update: Update, context):
         if state == 'AWAITING_KEY_NAME':
             context.user_data['new_key_name'] = msg
             context.user_data['state'] = 'AWAITING_KEY_VALUE'
-            base_url = RTMP_URL if RTMP_URL else "未设置(请检查.env)"
+            base_url = RTMP_URL if RTMP_URL else "⚠️ 未设置 (.env)"
             await update.message.reply_text(
-                f"📝 名称: **{msg}**\n"
-                f"🔗 固定服务器: `{base_url}`\n\n"
-                f"👉 **请输入推流码 (Stream Key)**:\n"
-                f"(例如: `user_123?token=abc`，它将拼接到服务器地址后)",
+                f"📝 名称: **{msg}**\n🔗 服务器: `{base_url}`\n\n👉 **请输入推流码 (Stream Key)**:",
                 parse_mode='Markdown'
             )
             return
@@ -88,17 +90,16 @@ async def menu_handler(update: Update, context):
                 keys = key_manager.load_keys()
                 keys[name] = msg
                 key_manager.save_keys(keys)
-                logger.info(f"New key saved: {name}")
-                await update.message.reply_text(f"✅ 密钥 **{name}** 已保存！", parse_mode='Markdown')
+                await update.message.reply_text(f"✅ 密钥 **{name}** 已保存！")
             except Exception as e:
-                logger.error(f"Save key error: {e}")
-                await update.message.reply_text(f"❌ 保存密钥失败: {e}")
+                await update.message.reply_text(f"❌ 保存失败: {e}")
             context.user_data['state'] = None
             return
 
-        # 2. 菜单按钮响应
+        # --- 菜单按钮处理 ---
+        
         if msg == "📂 浏览云盘":
-            wait_msg = await update.message.reply_text("🔍 正在请求 Alist 接口...")
+            wait_msg = await update.message.reply_text("🔍 读取文件列表中...")
             await show_file_list(update, "/", 1, message_obj=wait_msg)
             
         elif msg == "🧲 离线下载":
@@ -106,62 +107,58 @@ async def menu_handler(update: Update, context):
             await update.message.reply_text("📥 **请发送链接** (Magnet/HTTP)", parse_mode='Markdown')
 
         elif msg == "🌐 远程访问":
-            status_msg = await update.message.reply_text("⏳ 正在操作 Cloudflare 隧道 (可能需要 10-20 秒)...")
+            status_msg = await update.message.reply_text("⏳ 正在检查/操作 Cloudflare 隧道...")
             try:
                 current_url = tunnel.get_tunnel_status()
                 if current_url:
                     tunnel.stop_cloudflared()
-                    logger.info("Tunnel stopped by user")
                     await status_msg.edit_text("🚫 隧道已关闭。")
                 else:
-                    url = await tunnel.start_cloudflared()
+                    url, error_log = await tunnel.start_cloudflared()
                     if url:
-                        logger.info(f"Tunnel started: {url}")
-                        await status_msg.edit_text(f"✅ **远程访问已开启**\n\n🔗 地址: `{url}`", parse_mode='Markdown')
+                        await status_msg.edit_text(f"✅ **远程访问已开启**\n\n🔗 `{url}`", parse_mode='Markdown')
                     else:
-                        logger.error("Tunnel start failed")
-                        await status_msg.edit_text("❌ 启动失败。请检查后台日志 `tunnel.log`。\n可能原因: 网络问题或 cloudflared 未安装。")
+                        await status_msg.edit_text(f"❌ **启动失败**\n日志:\n```\n{error_log}\n```", parse_mode='Markdown')
             except Exception as e:
-                 logger.error(f"Tunnel toggle error: {e}", exc_info=True)
-                 await status_msg.edit_text(f"❌ 隧道操作异常: {e}")
+                 await _reply_error(update, e)
 
         elif msg == "🔐 登录信息":
             url = tunnel.get_effective_public_url() or ALIST_HOST
-            is_public = "trycloudflare" in url
-            tag = "(公网)" if is_public else "(内网)"
+            is_inner = "127.0.0.1" in url or "localhost" in url
+            tag = "(仅内网)" if is_inner else "(公网)"
             await update.message.reply_text(
-                f"🔐 **Alist 凭证** {tag}\n\n"
-                f"🔗 `{url}`\n"
-                f"👤 `{ALIST_USER}`\n"
-                f"🔑 `{ALIST_PASSWORD}`",
+                f"🔐 **Alist 信息** {tag}\n🔗 `{url}`\n👤 `{ALIST_USER}`\n🔑 `{ALIST_PASSWORD}`",
                 parse_mode='Markdown'
             )
 
         elif msg == "🔑 密钥管理":
             keys = key_manager.load_keys()
-            base_url = RTMP_URL if RTMP_URL else "⚠️ 未设置 RTMP_URL (.env)"
-            text = f"🔑 **推流配置**\n📍 固定服务器: `{base_url}`\n\n👇 **已保存的密钥 (后缀)**:"
-            
+            text = "🔑 **推流密钥管理**\n点击删除或添加："
             keyboard = []
             for k, v in keys.items():
-                display_v = v[:10] + "..." if len(v) > 10 else v
-                text += f"\n- **{k}**: `{display_v}`"
-                keyboard.append([InlineKeyboardButton(f"🗑 删除 {k}", callback_data=f"delkey{SEP}{k}")])
-            
-            keyboard.append([InlineKeyboardButton("➕ 添加新密钥", callback_data="addkey")])
-            await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+                keyboard.append([InlineKeyboardButton(f"🗑 删除: {k}", callback_data=f"del_key:{k}")])
+            keyboard.append([InlineKeyboardButton("➕ 添加新密钥", callback_data="add_key")])
+            await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
 
         elif msg == "🛑 停止推流":
-            msg_obj = await update.message.reply_text("⏳ 正在请求 GitHub API 停止任务...")
+            msg_obj = await update.message.reply_text("⏳ 正在连接 GitHub API...")
             success, res_text = github.stop_all_workflows()
             await msg_obj.edit_text(res_text)
             
         elif msg == "⚙️ 系统状态":
             alist_ok = alist.get_system_status()
-            alist_str = "✅ 运行中" if alist_ok else "❌ 未响应 (请检查 PM2 日志)"
+            alist_str = "✅ 运行中" if alist_ok else "❌ 未响应"
             tunnel_url = tunnel.get_tunnel_status()
             tunnel_str = "✅ 开启" if tunnel_url else "⚪ 关闭"
-            await update.message.reply_text(f"🖥 **系统状态**\nAlist: {alist_str}\n隧道: {tunnel_str}")
+            gh_status = "✅ 已配置" if github.GITHUB_PAT else "❌ 未配置"
+            
+            await update.message.reply_text(
+                f"🖥 **系统状态诊断**\n\n"
+                f"Alist 服务: {alist_str}\n"
+                f"内网穿透: {tunnel_str}\n"
+                f"GitHub Token: {gh_status}\n"
+                f"Public URL: `{tunnel.get_effective_public_url()}`"
+            , parse_mode='Markdown')
 
         elif msg == "🔄 更新系统":
             status_msg = await update.message.reply_text("⏳ 正在拉取代码更新...")
@@ -170,83 +167,98 @@ async def menu_handler(update: Update, context):
             if should_restart:
                 await asyncio.sleep(2)
                 os._exit(0)
-                
+
     except Exception as e:
         logger.error(f"Menu error: {e}", exc_info=True)
-        await update.message.reply_text(f"❌ **操作发生错误**: \n`{str(e)}`", parse_mode='Markdown')
+        await _reply_error(update, e)
 
 async def handle_offline_download(update, url):
-    msg = await update.message.reply_text("⏳ 提交 Aria2 任务中...")
+    msg = await update.message.reply_text("⏳ 提交中...")
     try:
         res = alist.add_aria2_task(url)
         if res.get('code') == 200:
-            logger.info(f"Download task added: {url}")
-            await msg.edit_text(f"✅ 下载任务已添加！")
+            await msg.edit_text(f"✅ 任务已添加")
         else:
-            logger.error(f"Download task failed: {res}")
-            await msg.edit_text(f"❌ 添加失败: {res.get('message')}\n请确保 Alist 后台 Aria2 配置正确。")
+            await msg.edit_text(f"❌ 失败: {res.get('message')}")
     except Exception as e:
-        logger.error(f"Download exception: {e}")
-        await msg.edit_text(f"❌ 异常: {e}")
+        await _reply_error(update, e)
 
 async def show_file_list(update: Update, path, page, message_obj=None):
-    """显示文件列表，优化了路径处理和错误捕获"""
     if not message_obj:
         message_obj = update.callback_query.message if update.callback_query else update.message
 
     try:
         res = alist.get_file_list(path, page)
+        
         if res.get('code') != 200:
-            error_msg = res.get('message', '未知错误')
-            logger.error(f"List files failed: {error_msg}")
-            text = f"❌ **无法读取目录**\n\n原因: `{error_msg}`\n\n请检查 Alist 是否运行中。"
-            if hasattr(message_obj, 'edit_text'): await message_obj.edit_text(text, parse_mode='Markdown')
-            else: await message_obj.reply_text(text, parse_mode='Markdown')
+            await message_obj.edit_text(
+                f"❌ **Alist 读取失败**\n"
+                f"Code: `{res.get('code')}`\n"
+                f"Msg: `{res.get('message')}`\n\n"
+                f"建议检查 Alist 服务状态或发送 '🔄 更新系统'。"
+            , parse_mode='Markdown')
             return
 
-        content = res['data']['content'] or []
-        total = res['data']['total']
-        content.sort(key=lambda x: x['is_dir'], reverse=True)
+        content = res.get('data', {}).get('content', [])
+        total = res.get('data', {}).get('total', 0)
+        
+        if content is None: content = []
+        # 排序：文件夹在前，然后按名称排序（忽略大小写）
+        content.sort(key=lambda x: (not x['is_dir'], x['name'].lower()))
         
         buttons = []
-        # 返回上级
+        
+        # 缓存当前路径用于刷新
+        current_path_id = cache.cache_path(path)
+        
+        # --- 导航栏 ---
+        nav_top = []
         if path != "/":
             parent = os.path.dirname(path.rstrip('/'))
             if not parent: parent = "/"
-            buttons.append([InlineKeyboardButton("🔙 返回上级", callback_data=f"n{SEP}{parent}{SEP}1")])
+            parent_id = cache.cache_path(parent)
+            nav_top.append(InlineKeyboardButton("🔙 上级", callback_data=f"nav:{parent_id}:1"))
         
+        nav_top.append(InlineKeyboardButton("🔄 刷新", callback_data=f"nav:{current_path_id}:{page}"))
+        
+        if path != "/":
+            root_id = cache.cache_path("/")
+            nav_top.append(InlineKeyboardButton("🏠 首页", callback_data=f"nav:{root_id}:1"))
+            
+        if nav_top: buttons.append(nav_top)
+
+        # --- 文件列表 ---
         for item in content:
             name = item['name']
-            display_name = (name[:15] + '..') if len(name) > 15 else name
+            is_dir = item['is_dir']
+            icon = _get_icon(name, is_dir)
             
-            # 路径拼接
-            if path == "/":
-                full_path = f"/{name}"
+            display_name = (name[:20] + '..') if len(name) > 20 else name
+            
+            # 拼接完整路径
+            if path == "/": full_path = f"/{name}"
+            else: full_path = f"{path.rstrip('/')}/{name}"
+            
+            # 缓存路径，获取短ID
+            path_id = cache.cache_path(full_path)
+            
+            if is_dir:
+                # nav:UUID:1
+                buttons.append([InlineKeyboardButton(f"{icon} {display_name}", callback_data=f"nav:{path_id}:1")])
             else:
-                full_path = f"{path.rstrip('/')}/{name}"
-                
-            cb_data = ""
-            if item['is_dir']:
-                cb_data = f"n{SEP}{full_path}{SEP}1"
-                if len(cb_data.encode('utf-8')) >= 64:
-                    buttons.append([InlineKeyboardButton(f"📁 {display_name} (路径过长)", callback_data="noop")])
-                else:
-                    buttons.append([InlineKeyboardButton(f"📁 {display_name}", callback_data=cb_data)])
-            else:
-                cb_data = f"p{SEP}{full_path}"
-                if len(cb_data.encode('utf-8')) >= 64:
-                     buttons.append([InlineKeyboardButton(f"▶️ {display_name} (文件名过长)", callback_data="noop")])
-                else:
-                     buttons.append([InlineKeyboardButton(f"▶️ {display_name}", callback_data=cb_data)])
+                # pre:UUID
+                buttons.append([InlineKeyboardButton(f"{icon} {display_name}", callback_data=f"pre:{path_id}")])
 
-        # 翻页
+        # --- 翻页 ---
         nav_row = []
-        if page > 1: nav_row.append(InlineKeyboardButton("⬅️", callback_data=f"n{SEP}{path}{SEP}{page-1}"))
-        if page * 10 < total: nav_row.append(InlineKeyboardButton("➡️", callback_data=f"n{SEP}{path}{SEP}{page+1}"))
+        if page > 1: 
+            nav_row.append(InlineKeyboardButton("⬅️ 上一页", callback_data=f"nav:{current_path_id}:{page-1}"))
+        if page * 10 < total: 
+            nav_row.append(InlineKeyboardButton("下一页 ➡️", callback_data=f"nav:{current_path_id}:{page+1}"))
         if nav_row: buttons.append(nav_row)
 
         markup = InlineKeyboardMarkup(buttons)
-        text = f"📂 **目录**: `{path}`"
+        text = f"📂 **当前目录**: `{path}`\n📄 页码: {page} / 项目数: {total}"
         
         if hasattr(message_obj, 'edit_text'):
              await message_obj.edit_text(text, reply_markup=markup, parse_mode='Markdown')
@@ -254,11 +266,8 @@ async def show_file_list(update: Update, path, page, message_obj=None):
              await message_obj.reply_text(text, reply_markup=markup, parse_mode='Markdown')
              
     except Exception as e:
-        logger.error(f"Show file list exception: {e}", exc_info=True)
-        if hasattr(message_obj, 'edit_text'):
-            await message_obj.edit_text(f"❌ 读取列表发生异常: {e}")
-        else:
-            await message_obj.reply_text(f"❌ 读取列表发生异常: {e}")
+        logger.error(f"List error: {e}", exc_info=True)
+        await _reply_error(update, e)
 
 async def callback_handler(update: Update, context):
     query = update.callback_query
@@ -268,90 +277,115 @@ async def callback_handler(update: Update, context):
         data = query.data.split(SEP)
         action = data[0]
 
-        logger.info(f"Callback Action: {action}, Data: {query.data}")
-
-        if action == "noop":
-            await query.message.reply_text("⚠️ 此项目路径或名称过长，Telegram 按钮限制无法操作，请尝试重命名文件。")
-            return
-
-        if action == "n": # nav
-            page = int(data[-1])
-            path = SEP.join(data[1:-1])
-            await show_file_list(update, path, int(page))
+        if action == "nav": # nav:UUID:PAGE
+            path_id = data[1]
+            page = int(data[2])
+            path = cache.get_path(path_id)
+            
+            if not path:
+                # 缓存失效，回首页
+                await show_file_list(update, "/", 1)
+                return
+            
+            await show_file_list(update, path, page)
         
-        elif action == "p": # pre_stream
-            path = SEP.join(data[1:])
+        elif action == "pre": # pre:UUID
+            path_id = data[1]
+            path = cache.get_path(path_id)
+            
+            if not path:
+                await query.message.edit_text("⚠️ 路径缓存已失效，请重新点击 '浏览云盘'。")
+                return
+
             context.user_data['pending_path'] = path
             keys = key_manager.load_keys()
             
             btns = []
             if not keys:
-                btns.append([InlineKeyboardButton("⚠️ 无密钥 (请去密钥管理添加)", callback_data="cancel")])
+                btns.append([InlineKeyboardButton("➕ 无密钥，点击添加", callback_data="add_key_shortcut")])
             else:
                 for k in keys:
-                    btns.append([InlineKeyboardButton(f"📡 推流到: {k}", callback_data=f"s{SEP}{k}")])
+                    btns.append([InlineKeyboardButton(f"📡 推流到: {k}", callback_data=f"stream:{k}")])
             
-            btns.append([InlineKeyboardButton("❌ 取消", callback_data="cancel")])
+            # 返回按钮
+            parent = os.path.dirname(path.rstrip('/'))
+            if not parent: parent = "/"
+            parent_id = cache.cache_path(parent)
+            
+            btns.append([InlineKeyboardButton("🔙 返回目录", callback_data=f"nav:{parent_id}:1")])
             
             await query.message.edit_text(
-                f"🎬 **准备推流**\n文件: `{os.path.basename(path)}`\n\n请选择推流配置:", 
+                f"🎬 **准备推流**\n\n📄 文件: `{os.path.basename(path)}`\n📂 路径: `{path}`\n\n👇 请选择推流目标:", 
                 reply_markup=InlineKeyboardMarkup(btns), 
                 parse_mode='Markdown'
             )
 
-        elif action == "s": # stream
+        elif action == "stream": # stream:KEY_NAME
             key_name = data[1]
             path = context.user_data.get('pending_path')
             
             if not path:
-                await query.message.edit_text("❌ 操作已过期，请重新浏览文件。")
+                await query.message.edit_text("❌ 操作已过期。")
                 return
 
             key_val = key_manager.load_keys().get(key_name)
-            
             if not RTMP_URL:
-                 await query.message.edit_text(f"❌ 错误: `.env` 中未配置 `RTMP_URL`。")
+                 await query.message.edit_text(f"❌ `.env` 未配置 `RTMP_URL`")
                  return
-                 
+            
             final_target = f"{RTMP_URL}{key_val}"
             
-            logger.info(f"Initiating stream for {path} to {key_name}")
-
-            await query.message.edit_text(f"🔄 获取文件直链中...\n📄 `{os.path.basename(path)}`", parse_mode='Markdown')
+            await query.message.edit_text(f"🔄 **正在处理**\n1. 获取文件直链...", parse_mode='Markdown')
             
+            # 获取链接
             raw_url, err_msg = alist.get_file_url(path)
             if not raw_url:
-                logger.error(f"Get file url failed: {err_msg}")
-                await query.message.edit_text(f"❌ 获取直链失败: {err_msg}")
+                await query.message.edit_text(f"❌ 获取链接失败:\n`{err_msg}`", parse_mode='Markdown')
                 return
 
-            await query.message.edit_text(f"🚀 正在触发 GitHub Actions...\n目标: `{key_name}`", parse_mode='Markdown')
+            await query.message.edit_text(f"🔄 **正在处理**\n2. 触发 GitHub Actions...\n🔗 `{raw_url[:40]}...`", parse_mode='Markdown')
             
             success, msg = github.trigger_github_workflow(raw_url, final_target)
             
             if success:
-                logger.info("GitHub workflow triggered successfully")
-                await query.message.edit_text(f"✅ **推流已开始！**\n\nGitHub 反馈: {msg}")
+                await query.message.edit_text(f"✅ **推流已启动！**\n\n📡 目标: `{key_name}`\n📄 反馈: {msg}")
             else:
-                logger.error(f"GitHub workflow failed: {msg}")
-                await query.message.edit_text(f"❌ **推流请求失败**\n\n错误日志: `{msg}`", parse_mode='Markdown')
+                await query.message.edit_text(f"❌ **请求失败**\n\n{msg}")
 
-        elif action == "addkey":
+        elif action == "add_key":
             context.user_data['state'] = 'AWAITING_KEY_NAME'
-            await query.message.reply_text("⌨️ 请输入新配置的 **名称** (例如: `Live1`):")
+            await query.message.reply_text("⌨️ 请输入新配置的 **名称** (如: Live1):")
             
-        elif action == "delkey":
-            key_to_del = data[1]
+        elif action == "add_key_shortcut":
+            context.user_data['state'] = 'AWAITING_KEY_NAME'
+            await query.message.reply_text("⌨️ 请输入新配置的 **名称**:")
+            
+        elif action == "del_key":
+            key = data[1]
             keys = key_manager.load_keys()
-            if key_to_del in keys:
-                del keys[key_to_del]
+            if key in keys:
+                del keys[key]
                 key_manager.save_keys(keys)
-                logger.info(f"Deleted key: {key_to_del}")
-                await query.message.reply_text(f"🗑 已删除 {key_to_del}")
+                # 刷新列表
+                keyboard = []
+                for k, v in keys.items():
+                    keyboard.append([InlineKeyboardButton(f"🗑 删除: {k}", callback_data=f"del_key:{k}")])
+                keyboard.append([InlineKeyboardButton("➕ 添加新密钥", callback_data="add_key")])
+                await query.message.edit_text("🔑 **推流密钥管理**\n已删除，请继续操作：", reply_markup=InlineKeyboardMarkup(keyboard))
         
         elif action == "cancel":
             await query.message.delete()
             
     except Exception as e:
-        logger.error(f"Callback handler exception: {e}", exc_info=True)
-        await query.message.reply_text(f"❌ 操作异常: {e}")
+        logger.error(f"Callback error: {e}", exc_info=True)
+        await _reply_error(update, e)
+
+async def _reply_error(update, e):
+    try:
+        tb = traceback.format_exc()[-1000:]
+        text = f"❌ **执行错误**\n`{str(e)}`\n\n日志:\n```\n{tb}\n```"
+        if update.callback_query:
+            await update.callback_query.message.reply_text(text, parse_mode='Markdown')
+        elif update.message:
+            await update.message.reply_text(text, parse_mode='Markdown')
+    except: pass
