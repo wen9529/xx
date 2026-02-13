@@ -22,35 +22,31 @@ ARCH=$(uname -m)
 CF_URL=""
 echo "🔍 检测系统架构: $ARCH"
 
-# 修复：Termux 是 Linux 环境，使用标准的 linux-arm64 兼容性更好，而非 android 版本
+# 修复: 重新使用 Android 专用版，配合 HTTP2 协议可解决 Code 1 错误
 case $ARCH in
-    aarch64) CF_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64" ;;
+    aarch64) CF_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-android-arm64" ;;
     x86_64)  CF_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64" ;;
     arm*)    CF_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm" ;;
-    *)       CF_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64" ;;
+    *)       CF_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-android-arm64" ;;
 esac
 
-# 强制重新下载 Cloudflared (如果之前下载了错误的版本)
+# 总是强制重新下载，以防版本混淆
 if [ -f "cloudflared" ]; then
-    # 简单的检查：如果架构不对，通常无法执行或者 file 命令会显示差异
-    # 这里直接删除重新下载，确保版本正确
-    echo "♻️ 正在重新下载 Cloudflared 以确保架构兼容..."
+    echo "♻️ 删除旧版本 Cloudflared 以确保更新..."
     rm cloudflared
 fi
 
-if [ ! -f "cloudflared" ]; then
-    echo "⬇️ 下载 Cloudflared: $CF_URL"
-    curl -L "$CF_URL" -o cloudflared
-    chmod +x cloudflared
-fi
+echo "⬇️ 下载 Cloudflared: $CF_URL"
+curl -L "$CF_URL" -o cloudflared
+chmod +x cloudflared
 
-# 再次验证
+# 验证二进制文件
 if ! ./cloudflared --version > /dev/null 2>&1; then
-    echo "⚠️ 下载的 Cloudflared 似乎仍无法运行。尝试备用版本(Android版)..."
-    # 如果标准 Linux 版不行，尝试回退到 Android 版 (罕见情况)
+    echo "⚠️ 下载的 Cloudflared 无法运行，尝试 Linux 标准版作为备选..."
     rm cloudflared
+    # 备选方案: 如果 Android 版在某些模拟环境失败，回退到 Linux 版
     case $ARCH in
-        aarch64) CF_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-android-arm64" ;;
+        aarch64) CF_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64" ;;
     esac
     curl -L "$CF_URL" -o cloudflared
     chmod +x cloudflared

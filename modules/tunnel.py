@@ -26,7 +26,16 @@ async def start_cloudflared():
         log_file = os.path.join(BASE_DIR, "tunnel.log")
         if os.path.exists(log_file): os.remove(log_file)
 
-        cmd = [CLOUDFLARED_BIN, "tunnel", "--url", ALIST_HOST, "--logfile", log_file]
+        # 关键修改: 
+        # 1. --protocol http2: 解决部分网络环境下 QUIC 被阻断的问题
+        # 2. --no-autoupdate: 防止因权限不足尝试更新而崩溃
+        cmd = [
+            CLOUDFLARED_BIN, "tunnel", 
+            "--url", ALIST_HOST, 
+            "--protocol", "http2", 
+            "--no-autoupdate",
+            "--logfile", log_file
+        ]
         logger.info(f"执行命令: {' '.join(cmd)}")
         
         try:
@@ -35,7 +44,6 @@ async def start_cloudflared():
             # 捕获 Exec format error (通常是二进制架构不对)
             if e.errno == 8: # Exec format error
                 logger.error(f"Cloudflared 无法运行 (架构不兼容): {e}")
-                # 尝试删除错误的文件
                 try: os.remove(CLOUDFLARED_BIN) 
                 except: pass
                 return None, "❌ Cloudflared 二进制文件架构不兼容或已损坏。\n已自动删除错误文件。\n请重新发送 '🔄 更新系统' 来重新下载正确版本。"
@@ -43,8 +51,8 @@ async def start_cloudflared():
         
         logger.info("Cloudflared 进程已启动，等待 URL 生成...")
         
-        # 等待最多 20 秒
-        for i in range(20):
+        # 等待最多 30 秒 (HTTP2 连接可能稍慢)
+        for i in range(30):
             await asyncio.sleep(1)
             
             # 检查进程是否过早退出
@@ -53,8 +61,13 @@ async def start_cloudflared():
                 logger.error(f"Cloudflared 意外退出，退出码: {err_code}")
                 
                 # 读取日志查找原因
-                log_content = _read_log_tail(log_file)
-                return None, f"进程意外退出 (Code {err_code})。\n日志:\n{log_content}"
+                log_content = _read_log_tail(log_file, lines=20)
+                
+                suggestion = ""
+                if "Code 1" in str(err_code) or err_code == 1:
+                    suggestion = "\n\n💡 **提示**: Code 1 通常是网络或 DNS 问题。脚本已尝试使用 http2 协议修复。"
+                
+                return None, f"🚫 进程意外退出 (Code {err_code})。{suggestion}\n📜 日志:\n{log_content}"
 
             # 检查日志文件
             if os.path.exists(log_file):
@@ -75,7 +88,7 @@ async def start_cloudflared():
         
         # 超时处理
         stop_cloudflared()
-        return None, "启动超时，未在日志中找到 URL。"
+        return None, "启动超时，未在日志中找到 URL。可能是网络连接过慢。"
 
     except Exception as e:
         logger.error(f"启动隧道发生异常: {e}", exc_info=True)
