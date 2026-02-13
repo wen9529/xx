@@ -20,7 +20,21 @@ def _get_icon(name, is_dir):
     if ext in ['.py', '.sh', '.js', '.json', '.xml', '.html', '.txt', '.md']: return "📝"
     return "📄"
 
-# --- 主菜单逻辑 ---
+async def _show_main_menu(update: Update, text="👋 **StreamForge 控制台**\n请选择操作："):
+    """统一发送主菜单"""
+    keyboard = [
+        ["📂 浏览云盘", "🧲 离线下载"],
+        ["🛑 停止推流", "🌐 远程访问"],
+        ["🔑 密钥管理", "⚙️ 系统状态"],
+        ["🔐 登录信息", "🔄 更新系统", "🆘 使用帮助"]
+    ]
+    await update.message.reply_text(
+        text,
+        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True),
+        parse_mode='Markdown'
+    )
+
+# --- 主命令逻辑 ---
 
 async def start(update: Update, context):
     """发送主菜单"""
@@ -31,19 +45,8 @@ async def start(update: Update, context):
             return
         
         context.user_data.clear()
+        await _show_main_menu(update)
         
-        keyboard = [
-            ["📂 浏览云盘", "🧲 离线下载"],
-            ["🌐 远程访问", "🔐 登录信息"],
-            ["🛑 停止推流", "🔑 密钥管理"],
-            ["⚙️ 系统状态", "🔄 更新系统"]
-        ]
-        
-        await update.message.reply_text(
-            "👋 **StreamForge 控制台**\n(功能已完善)\n请选择操作：",
-            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True),
-            parse_mode='Markdown'
-        )
     except Exception as e:
         logger.error(f"Start handler error: {e}", exc_info=True)
         await _reply_error(update, e)
@@ -51,39 +54,45 @@ async def start(update: Update, context):
 async def download_command(update: Update, context):
     if str(update.effective_user.id) != str(ADMIN_ID): return
     context.user_data['state'] = 'AWAITING_LINK'
-    await update.message.reply_text("📥 **请发送磁力链接 (Magnet) 或 HTTP 链接**", parse_mode='Markdown')
+    await update.message.reply_text("📥 **请发送磁力链接 (Magnet) 或 HTTP 链接**\n(发送 /cancel 取消)", parse_mode='Markdown')
 
 async def menu_handler(update: Update, context):
     try:
         if str(update.effective_user.id) != str(ADMIN_ID): return
         msg = update.message.text.strip()
         
+        # --- 全局取消指令 ---
+        if msg == "/cancel" or msg == "🔙 返回菜单":
+            context.user_data.clear()
+            await _show_main_menu(update, "已取消操作，返回主菜单。")
+            return
+
         # --- 状态机处理 (输入链接/密钥) ---
         state = context.user_data.get('state')
         
+        # 1. 自动识别磁力链/HTTP链接 (即使不在 AWAITING_LINK 状态)
         if msg.startswith("magnet:?") or (msg.startswith("http") and not state):
             await handle_offline_download(update, msg)
             return
 
+        # 2. 处理等待链接状态
         if state == 'AWAITING_LINK':
-            if msg == "/cancel":
-                context.user_data.clear()
-                await update.message.reply_text("已取消")
-                return
             await handle_offline_download(update, msg)
             context.user_data['state'] = None
             return
 
+        # 3. 处理密钥名称输入
         if state == 'AWAITING_KEY_NAME':
             context.user_data['new_key_name'] = msg
             context.user_data['state'] = 'AWAITING_KEY_VALUE'
             base_url = RTMP_URL if RTMP_URL else "⚠️ 未设置 (.env)"
             await update.message.reply_text(
-                f"📝 名称: **{msg}**\n🔗 服务器: `{base_url}`\n\n👉 **请输入推流码 (Stream Key)**:",
+                f"📝 名称: **{msg}**\n🔗 服务器: `{base_url}`\n\n👉 **请输入推流码 (Stream Key)**:\n(例如: `live_xxxxxx`)",
                 parse_mode='Markdown'
             )
             return
         
+        # 4. 处理密钥值输入
         if state == 'AWAITING_KEY_VALUE':
             name = context.user_data.get('new_key_name')
             try:
@@ -94,6 +103,8 @@ async def menu_handler(update: Update, context):
             except Exception as e:
                 await update.message.reply_text(f"❌ 保存失败: {e}")
             context.user_data['state'] = None
+            # 返回主菜单
+            await _show_main_menu(update, "密钥已保存，请继续操作：")
             return
 
         # --- 菜单按钮处理 ---
@@ -104,7 +115,7 @@ async def menu_handler(update: Update, context):
             
         elif msg == "🧲 离线下载":
             context.user_data['state'] = 'AWAITING_LINK'
-            await update.message.reply_text("📥 **请发送链接** (Magnet/HTTP)", parse_mode='Markdown')
+            await update.message.reply_text("📥 **请发送下载链接**\n\n支持 Magnet / HTTP / HTTPS 直链\n发送 `/cancel` 取消", parse_mode='Markdown')
 
         elif msg == "🌐 远程访问":
             status_msg = await update.message.reply_text("⏳ 正在检查/操作 Cloudflare 隧道...")
@@ -127,13 +138,16 @@ async def menu_handler(update: Update, context):
             is_inner = "127.0.0.1" in url or "localhost" in url
             tag = "(仅内网)" if is_inner else "(公网)"
             await update.message.reply_text(
-                f"🔐 **Alist 信息** {tag}\n🔗 `{url}`\n👤 `{ALIST_USER}`\n🔑 `{ALIST_PASSWORD}`",
+                f"🔐 **Alist 管理面板** {tag}\n\n"
+                f"🔗 地址: `{url}`\n"
+                f"👤 用户: `{ALIST_USER}`\n"
+                f"🔑 密码: `{ALIST_PASSWORD}`",
                 parse_mode='Markdown'
             )
 
         elif msg == "🔑 密钥管理":
             keys = key_manager.load_keys()
-            text = "🔑 **推流密钥管理**\n点击删除或添加："
+            text = "🔑 **推流密钥管理**\n\n点击下方按钮删除旧密钥或添加新密钥："
             keyboard = []
             for k, v in keys.items():
                 keyboard.append([InlineKeyboardButton(f"🗑 删除: {k}", callback_data=f"del_key:{k}")])
@@ -141,7 +155,7 @@ async def menu_handler(update: Update, context):
             await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
 
         elif msg == "🛑 停止推流":
-            msg_obj = await update.message.reply_text("⏳ 正在连接 GitHub API...")
+            msg_obj = await update.message.reply_text("⏳ 正在连接 GitHub API 停止所有任务...")
             success, res_text = github.stop_all_workflows()
             await msg_obj.edit_text(res_text)
             
@@ -154,32 +168,56 @@ async def menu_handler(update: Update, context):
             
             await update.message.reply_text(
                 f"🖥 **系统状态诊断**\n\n"
-                f"Alist 服务: {alist_str}\n"
-                f"内网穿透: {tunnel_str}\n"
-                f"GitHub Token: {gh_status}\n"
-                f"Public URL: `{tunnel.get_effective_public_url()}`"
+                f"📂 Alist 服务: {alist_str}\n"
+                f"🌐 内网穿透: {tunnel_str}\n"
+                f"🐙 GitHub Token: {gh_status}\n"
+                f"🔗 当前公网 URL: `{tunnel.get_effective_public_url()}`"
             , parse_mode='Markdown')
 
         elif msg == "🔄 更新系统":
-            status_msg = await update.message.reply_text("⏳ 正在拉取代码更新...")
+            status_msg = await update.message.reply_text("⏳ 正在拉取代码更新 (Git Pull)...")
             should_restart, result_text = updater.update_repo()
             await status_msg.edit_text(result_text, parse_mode='Markdown')
             if should_restart:
                 await asyncio.sleep(2)
+                # 实际上由 PM2 重启，这里只退出进程
                 os._exit(0)
+                
+        elif msg == "🆘 使用帮助":
+            help_text = (
+                "📘 **StreamForge 使用指南**\n\n"
+                "**1. 如何推流直播？**\n"
+                "   • 点击 `📂 浏览云盘`\n"
+                "   • 找到视频文件，点击文件名\n"
+                "   • 选择要推流的目标 (需先在密钥管理中添加)\n\n"
+                "**2. 如何离线下载？**\n"
+                "   • 点击 `🧲 离线下载`，发送 Magnet 链接或 HTTP 直链\n"
+                "   • 或者直接向机器人发送链接\n\n"
+                "**3. 无法推流？**\n"
+                "   • 检查 `⚙️ 系统状态` 里的 GitHub Token\n"
+                "   • 确保已开启 `🌐 远程访问` (如果 GitHub 无法访问你的内网 IP)\n\n"
+                "**4. 添加推流目标**\n"
+                "   • 点击 `🔑 密钥管理` -> `➕ 添加新密钥`\n"
+                "   • 名称随意 (如 Youtube)，Key 填平台的串流码"
+            )
+            await update.message.reply_text(help_text, parse_mode='Markdown')
+            
+        else:
+            # 未知命令，不处理或提示
+            pass
 
     except Exception as e:
         logger.error(f"Menu error: {e}", exc_info=True)
         await _reply_error(update, e)
 
 async def handle_offline_download(update, url):
-    msg = await update.message.reply_text("⏳ 提交中...")
+    msg = await update.message.reply_text("⏳ 正在提交 Aria2 任务...")
     try:
         res = alist.add_aria2_task(url)
         if res.get('code') == 200:
-            await msg.edit_text(f"✅ 任务已添加")
+            await msg.edit_text(f"✅ **下载任务已添加**\n您可以去 Alist 网页版查看进度。")
         else:
-            await msg.edit_text(f"❌ 失败: {res.get('message')}")
+            await msg.edit_text(f"❌ **添加失败**\n错误: {res.get('message')}")
     except Exception as e:
         await _reply_error(update, e)
 
@@ -258,7 +296,7 @@ async def show_file_list(update: Update, path, page, message_obj=None):
         if nav_row: buttons.append(nav_row)
 
         markup = InlineKeyboardMarkup(buttons)
-        text = f"📂 **当前目录**: `{path}`\n📄 页码: {page} / 项目数: {total}"
+        text = f"📂 **文件浏览器**\nPATH: `{path}`\n📄 页码: {page} / 项目: {total}"
         
         if hasattr(message_obj, 'edit_text'):
              await message_obj.edit_text(text, reply_markup=markup, parse_mode='Markdown')
