@@ -29,17 +29,30 @@ async def start_cloudflared():
         # 关键修改: 
         # 1. --protocol http2: 解决部分网络环境下 QUIC 被阻断的问题
         # 2. --no-autoupdate: 防止因权限不足尝试更新而崩溃
+        # 3. --edge-ip-version 4: 强制 IPv4，避免 Termux 下 IPv6 解析超时
         cmd = [
             CLOUDFLARED_BIN, "tunnel", 
             "--url", ALIST_HOST, 
             "--protocol", "http2", 
+            "--edge-ip-version", "4",
             "--no-autoupdate",
             "--logfile", log_file
         ]
         logger.info(f"执行命令: {' '.join(cmd)}")
         
+        # 🛠️ 关键修复 Code 1 错误:
+        # Termux/Android 没有标准的 /etc/resolv.conf。
+        # 设置 GODEBUG=netdns=go 强制 Go 程序使用内置 DNS 解析器，不依赖系统 libc。
+        env = os.environ.copy()
+        env["GODEBUG"] = "netdns=go"
+        
         try:
-            tunnel_process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            tunnel_process = subprocess.Popen(
+                cmd, 
+                stdout=subprocess.DEVNULL, 
+                stderr=subprocess.DEVNULL,
+                env=env  # 注入环境变量
+            )
         except OSError as e:
             # 捕获 Exec format error (通常是二进制架构不对)
             if e.errno == 8: # Exec format error
@@ -51,7 +64,7 @@ async def start_cloudflared():
         
         logger.info("Cloudflared 进程已启动，等待 URL 生成...")
         
-        # 等待最多 30 秒 (HTTP2 连接可能稍慢)
+        # 等待最多 30 秒
         for i in range(30):
             await asyncio.sleep(1)
             
@@ -65,7 +78,7 @@ async def start_cloudflared():
                 
                 suggestion = ""
                 if "Code 1" in str(err_code) or err_code == 1:
-                    suggestion = "\n\n💡 **提示**: Code 1 通常是网络或 DNS 问题。脚本已尝试使用 http2 协议修复。"
+                    suggestion = "\n\n💡 **提示**: 仍然报错 Code 1？\n1. 尝试重启手机网络(切换WiFi/流量)\n2. 确保 Alist 已启动且没有报错"
                 
                 return None, f"🚫 进程意外退出 (Code {err_code})。{suggestion}\n📜 日志:\n{log_content}"
 
