@@ -22,22 +22,36 @@ ARCH=$(uname -m)
 CF_URL=""
 echo "🔍 检测系统架构: $ARCH"
 
+# 修复：Termux 是 Linux 环境，使用标准的 linux-arm64 兼容性更好，而非 android 版本
 case $ARCH in
-    aarch64) CF_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-android-arm64" ;;
+    aarch64) CF_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64" ;;
     x86_64)  CF_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64" ;;
     arm*)    CF_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm" ;;
-    *)       CF_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-android-arm64" ;;
+    *)       CF_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64" ;;
 esac
 
+# 强制重新下载 Cloudflared (如果之前下载了错误的版本)
 if [ -f "cloudflared" ]; then
-    if ! file cloudflared | grep -q "ELF"; then
-        echo "⚠️ Cloudflared 文件损坏，重新下载..."
-        rm cloudflared
-    fi
+    # 简单的检查：如果架构不对，通常无法执行或者 file 命令会显示差异
+    # 这里直接删除重新下载，确保版本正确
+    echo "♻️ 正在重新下载 Cloudflared 以确保架构兼容..."
+    rm cloudflared
 fi
 
 if [ ! -f "cloudflared" ]; then
-    echo "⬇️ 下载 Cloudflared..."
+    echo "⬇️ 下载 Cloudflared: $CF_URL"
+    curl -L "$CF_URL" -o cloudflared
+    chmod +x cloudflared
+fi
+
+# 再次验证
+if ! ./cloudflared --version > /dev/null 2>&1; then
+    echo "⚠️ 下载的 Cloudflared 似乎仍无法运行。尝试备用版本(Android版)..."
+    # 如果标准 Linux 版不行，尝试回退到 Android 版 (罕见情况)
+    rm cloudflared
+    case $ARCH in
+        aarch64) CF_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-android-arm64" ;;
+    esac
     curl -L "$CF_URL" -o cloudflared
     chmod +x cloudflared
 fi
@@ -90,8 +104,6 @@ echo "🔐 配置 Alist..."
 export ALIST_DATA_DIR="./alist_data"
 mkdir -p "$ALIST_DATA_DIR"
 
-# 关键修改：不要使用 pm2 delete all，这会杀死正在运行更新的 Bot
-# 只停止 alist 进行维护
 pm2 stop alist >/dev/null 2>&1 || true
 pkill -f "alist server" || true
 
@@ -105,10 +117,8 @@ if ! ps -p $ALIST_PID > /dev/null; then
     echo "❌ Alist 启动失败，日志:"
     cat alist_init.log
 else
-    # 设置密码
     alist admin set "${ALIST_PASSWORD:-admin}" --data "$ALIST_DATA_DIR" >/dev/null 2>&1
     
-    # 自动化挂载本地存储
     echo "💾 检查并初始化存储..."
     python3 -c "
 import sys, os
@@ -161,12 +171,8 @@ EOF
 
 # 9. 启动/重载服务
 echo "🔄 更新 PM2 服务状态..."
-# 更新配置并启动未运行的进程
 pm2 start ecosystem.config.json
-
-# 显式重启 watcher 确保其逻辑更新 (Bot 会自我重启，所以这里不重启 Bot 避免中断)
 pm2 restart watcher || true
-
 pm2 save --force
 
 echo "✅ 系统更新/修复完成！"

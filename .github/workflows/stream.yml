@@ -32,34 +32,40 @@ jobs:
           
           echo "🔍 Analyzing stream info..."
           
-          # 使用 ffprobe 检测视频编码
-          # 如果检测失败，默认为空，触发转码逻辑
+          # 1. 探测视频编码
           V_CODEC=$(ffprobe -v error -user_agent "$UA" -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$FILE_URL" || echo "")
           
           echo "📋 Detected Video Codec: [$V_CODEC]"
           
           # --- 视频处理逻辑 ---
-          # Telegram 直播必须是 H.264。如果源文件已经是 H.264，则使用 copy 模式（省资源）。
-          # 否则，进行转码（libx264）。
+          # 修复画面拉伸：强制标准化为 1920x1080，保持原比例，不足部分填充黑边
+          # 这样可以防止 Telegram 播放器强行拉伸画面
+          
+          # 基础参数
+          # -pix_fmt yuv420p: 确保兼容性
+          # -g 60: 关键帧间隔 2秒
+          # -preset veryfast: 保证推流流畅度
+          COMMON_OPTS="-map 0:v:0 -map 0:a:0 -pix_fmt yuv420p -g 60 -sc_threshold 0"
+          
+          # 强制 1080P + 黑边填充滤镜
+          VIDEO_FILTER="scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2"
+          
           if [ "$V_CODEC" == "h264" ]; then
-            echo "✅ Source is H.264. Using copy mode (Low CPU)."
-            VIDEO_OPTS="-c:v copy"
+            # 即使是 H264，如果不想拉伸，最好也转码一下加黑边。
+            # 但为了性能，如果用户坚持原画，可以使用 copy。
+            # 不过为了解决您提到的“扭曲”问题，我们这里强制转码并规范化分辨率。
+            echo "ℹ️ Enforcing 1080p normalization to fix aspect ratio distortion."
+            VIDEO_OPTS="-c:v libx264 -preset veryfast $COMMON_OPTS -vf \"$VIDEO_FILTER\""
           else
-            echo "⚠️ Source is not H.264 (or detection failed). Transcoding to H.264 (High CPU)."
-            # -preset veryfast: 保证推流速度
-            # -g 60: 关键帧间隔 2秒 (30fps)
-            VIDEO_OPTS="-c:v libx264 -preset veryfast -g 60 -sc_threshold 0"
+            echo "⚠️ Transcoding to H.264 (High CPU)."
+            VIDEO_OPTS="-c:v libx264 -preset veryfast $COMMON_OPTS -vf \"$VIDEO_FILTER\""
           fi
           
           # --- 音频处理逻辑 ---
-          # 强制转码为 AAC。
-          # 1. 解决源文件是 MP3 导致 'aac_adtstoasc' 滤镜报错的问题。
-          # 2. 确保音频符合 RTMP/FLV 标准。
+          # 强制 AAC 128k
           AUDIO_OPTS="-c:a aac -b:a 128k -ar 44100"
           
           echo "🚀 Starting FFmpeg..."
-          echo "Video Opts: $VIDEO_OPTS"
-          echo "Audio Opts: $AUDIO_OPTS"
           
           ffmpeg \
             -re \
