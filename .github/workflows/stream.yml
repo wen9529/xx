@@ -28,27 +28,43 @@ jobs:
         run: |
           FILE_URL="${{ inputs.file_url }}"
           RTMP_URL="${{ inputs.rtmp_url }}"
+          UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
           
-          echo "Target: RTMP Server"
-          # 隐藏敏感 URL 避免日志泄露
-          echo "Starting stream..."
+          echo "🔍 Analyzing stream info..."
           
-          # FFmpeg 优化参数说明:
-          # -re: 实时读取 (Real-time)
-          # -headers: 伪装 User-Agent，防止某些网盘直接拒绝
-          # -reconnect 1: 开启断线重连
-          # -reconnect_streamed 1: 允许流式重连
-          # -reconnect_delay_max 5: 最大重连等待时间
-          # -i: 输入 URL
-          # -c:v copy -c:a copy: 直接推流不转码 (Copy mode)
-          # -bsf:a aac_adtstoasc: 修复 TS/FLV 容器的 AAC 音频流格式
-          # -f flv: 输出格式为 flv (RTMP 标准)
+          # 使用 ffprobe 检测视频编码
+          # 如果检测失败，默认为空，触发转码逻辑
+          V_CODEC=$(ffprobe -v error -user_agent "$UA" -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$FILE_URL" || echo "")
+          
+          echo "📋 Detected Video Codec: [$V_CODEC]"
+          
+          # --- 视频处理逻辑 ---
+          # Telegram 直播必须是 H.264。如果源文件已经是 H.264，则使用 copy 模式（省资源）。
+          # 否则，进行转码（libx264）。
+          if [ "$V_CODEC" == "h264" ]; then
+            echo "✅ Source is H.264. Using copy mode (Low CPU)."
+            VIDEO_OPTS="-c:v copy"
+          else
+            echo "⚠️ Source is not H.264 (or detection failed). Transcoding to H.264 (High CPU)."
+            # -preset veryfast: 保证推流速度
+            # -g 60: 关键帧间隔 2秒 (30fps)
+            VIDEO_OPTS="-c:v libx264 -preset veryfast -g 60 -sc_threshold 0"
+          fi
+          
+          # --- 音频处理逻辑 ---
+          # 强制转码为 AAC。
+          # 1. 解决源文件是 MP3 导致 'aac_adtstoasc' 滤镜报错的问题。
+          # 2. 确保音频符合 RTMP/FLV 标准。
+          AUDIO_OPTS="-c:a aac -b:a 128k -ar 44100"
+          
+          echo "🚀 Starting FFmpeg..."
+          echo "Video Opts: $VIDEO_OPTS"
+          echo "Audio Opts: $AUDIO_OPTS"
           
           ffmpeg \
             -re \
-            -user_agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36" \
+            -user_agent "$UA" \
             -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 \
             -i "$FILE_URL" \
-            -c:v copy -c:a copy \
-            -bsf:a aac_adtstoasc \
+            $VIDEO_OPTS $AUDIO_OPTS \
             -f flv "$RTMP_URL"

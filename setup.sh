@@ -1,12 +1,11 @@
 #!/bin/bash
 
-# StreamForge Termux Setup Script (Ultimate Fix)
+# StreamForge Termux Setup Script (Safe Update Version)
 
 echo "🚀 开始安装/修复依赖环境..."
 
 # 1. 基础工具安装
 pkg update -y 
-# file 命令用于检查二进制文件类型
 pkg install -y python ffmpeg git nodejs wget aria2 alist vim procps jq file
 
 # 2. Python 依赖
@@ -17,58 +16,31 @@ if ! command -v pm2 &> /dev/null; then
     npm install pm2 -g
 fi
 
-# 4. Cloudflared 环境检查 (修复架构问题)
+# 4. Cloudflared 环境检查
 pkill -f cloudflared || true
-
-# 架构检测
 ARCH=$(uname -m)
 CF_URL=""
-echo "🔍 检测到系统架构: $ARCH"
+echo "🔍 检测系统架构: $ARCH"
 
 case $ARCH in
-    aarch64)
-        CF_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-android-arm64"
-        ;;
-    x86_64)
-        CF_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64"
-        ;;
-    arm*)
-        CF_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm"
-        ;;
-    *)
-        echo "⚠️ 未知架构，尝试下载 Android ARM64 版本..."
-        CF_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-android-arm64"
-        ;;
+    aarch64) CF_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-android-arm64" ;;
+    x86_64)  CF_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64" ;;
+    arm*)    CF_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm" ;;
+    *)       CF_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-android-arm64" ;;
 esac
 
-install_cloudflared() {
-    if [ -f "cloudflared" ]; then
-        # 检查是否为有效的 ELF 二进制文件
-        if file cloudflared | grep -q "ELF"; then
-            echo "✅ Cloudflared 已存在且格式正确。"
-            return
-        else
-            echo "⚠️ Cloudflared 文件损坏 (可能是 HTML 页面)，重新下载..."
-            rm cloudflared
-        fi
+if [ -f "cloudflared" ]; then
+    if ! file cloudflared | grep -q "ELF"; then
+        echo "⚠️ Cloudflared 文件损坏，重新下载..."
+        rm cloudflared
     fi
+fi
 
-    echo "⬇️ 下载 Cloudflared ($ARCH)..."
-    echo "🔗 源: $CF_URL"
+if [ ! -f "cloudflared" ]; then
+    echo "⬇️ 下载 Cloudflared..."
     curl -L "$CF_URL" -o cloudflared
     chmod +x cloudflared
-    
-    # 二次检查
-    if ! file cloudflared | grep -q "ELF"; then
-        echo "❌ 下载失败！下载的文件不是二进制程序。请检查网络或手动下载。"
-        # 尝试备用源 (Cloudflare 官方)
-        echo "🔄 尝试备用下载源..."
-        curl -L "https://github.com/cloudflare/cloudflared/releases/download/2024.4.1/cloudflared-linux-android-arm64" -o cloudflared
-        chmod +x cloudflared
-    fi
-}
-
-install_cloudflared
+fi
 
 # 5. 配置 Aria2
 mkdir -p "${HOME}/downloads"
@@ -111,52 +83,46 @@ ALIST_USER=admin
 ALIST_PASSWORD=admin
 EOF
 fi
-
 if [ -f "$CONFIG_PATH" ]; then export $(grep -v '^#' "$CONFIG_PATH" | xargs); fi
 
-# 7. 启动 Alist 并初始化 (关键修复)
+# 7. 启动 Alist 并初始化
 echo "🔐 配置 Alist..."
 export ALIST_DATA_DIR="./alist_data"
 mkdir -p "$ALIST_DATA_DIR"
 
-pm2 delete all >/dev/null 2>&1
+# 关键修改：不要使用 pm2 delete all，这会杀死正在运行更新的 Bot
+# 只停止 alist 进行维护
+pm2 stop alist >/dev/null 2>&1 || true
 pkill -f "alist server" || true
 
-echo "⏳ 启动 Alist 服务 (请等待 15秒)..."
+echo "⏳ 启动临时 Alist (请等待 10秒)..."
 nohup alist server --data "$ALIST_DATA_DIR" > alist_init.log 2>&1 &
 ALIST_PID=$!
 
-sleep 15
+sleep 10
 
 if ! ps -p $ALIST_PID > /dev/null; then
     echo "❌ Alist 启动失败，日志:"
     cat alist_init.log
 else
     # 设置密码
-    echo "⚙️ 设置管理员密码..."
-    alist admin set "${ALIST_PASSWORD:-admin}" --data "$ALIST_DATA_DIR"
+    alist admin set "${ALIST_PASSWORD:-admin}" --data "$ALIST_DATA_DIR" >/dev/null 2>&1
     
-    # --- 自动化挂载本地存储 ---
-    echo "💾 正在自动初始化 Alist 存储..."
-    # 使用 Python 脚本调用 API 初始化存储，解决 'storage not found'
+    # 自动化挂载本地存储
+    echo "💾 检查并初始化存储..."
     python3 -c "
 import sys, os
 sys.path.append(os.getcwd())
 try:
     from modules.alist import init_default_storage
-    if init_default_storage():
-        print('✅ [Success] 本地存储已自动挂载到 /')
-    else:
-        print('⚠️ [Skip] 存储初始化跳过或失败 (可能已存在)')
+    init_default_storage()
 except Exception as e:
-    print(f'❌ [Error] 初始化存储脚本出错: {e}')
+    print(f'⚠️ 存储初始化跳过: {e}')
 "
-    # -----------------------
-    
     kill $ALIST_PID 2>/dev/null
 fi
 
-# 8. 生成 PM2 配置
+# 8. 生成/更新 PM2 配置
 cat <<EOF > ecosystem.config.json
 {
   "apps": [
@@ -193,10 +159,10 @@ cat <<EOF > ecosystem.config.json
 }
 EOF
 
-# 9. 启动服务
-echo "🔄 重启 PM2 服务..."
+# 9. 启动/重载服务
+echo "🔄 更新 PM2 服务状态..."
+# 使用 start 来更新配置并启动未运行的服务，已运行的(如Bot)不会被杀死
 pm2 start ecosystem.config.json
 pm2 save --force
 
-echo "✅ 系统安装修复完成！"
-echo "👉 请向 Bot 发送 /start"
+echo "✅ 系统更新/修复完成！"
