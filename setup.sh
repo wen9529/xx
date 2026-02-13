@@ -161,8 +161,12 @@ EOF
 
 # 9. 启动/重载服务
 echo "🔄 更新 PM2 服务状态..."
-# 使用 start 来更新配置并启动未运行的服务，已运行的(如Bot)不会被杀死
+# 更新配置并启动未运行的进程
 pm2 start ecosystem.config.json
+
+# 显式重启 watcher 确保其逻辑更新 (Bot 会自我重启，所以这里不重启 Bot 避免中断)
+pm2 restart watcher || true
+
 pm2 save --force
 
 echo "✅ 系统更新/修复完成！"
